@@ -79,6 +79,11 @@ pub fn main() !void {
     // Handle fetch command before loading dictionary
     const command = positional.items[0];
     if (std.mem.eql(u8, command, "fetch")) {
+        if (positional.items.len > 1) {
+            try ew.writeAll("Error: 'fetch' takes no arguments.\n");
+            try ew.flush();
+            std.process.exit(1);
+        }
         fetch.fetchDictionary(gpa, w, ew) catch |err| {
             if (err != error.FetchFailed) {
                 try ew.print("Error: {}\n", .{err});
@@ -94,14 +99,23 @@ pub fn main() !void {
     const path = dict_path orelse blk: {
         const env_path = std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH") catch |err| switch (err) {
             error.EnvironmentVariableNotFound => {
-                // Try ~/.config/mmcif-dict/mmcif_pdbx.json
-                if (fetch.configDictExists(gpa)) {
-                    path_owned = true;
-                    break :blk fetch.getConfigDictPath(gpa) catch {
-                        try ew.writeAll("Error: cannot determine config path.\n");
+                // Try ~/.config/mmcif-dict/mmcif_pdbx.json (single alloc, no TOCTOU)
+                const config_path = fetch.getConfigDictPath(gpa) catch {
+                    // Fall through to exe_dir fallback
+                    const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
+                        try ew.writeAll("Error: dictionary not found. Run 'mmcif-dict fetch' to download, or use --dict/MMCIF_DICT_PATH.\n");
                         try ew.flush();
                         std.process.exit(1);
                     };
+                    defer gpa.free(exe_dir);
+                    path_owned = true;
+                    break :blk try std.fmt.allocPrint(gpa, "{s}/../data/mmcif_pdbx.json", .{exe_dir});
+                };
+                if (std.fs.cwd().access(config_path, .{})) |_| {
+                    path_owned = true;
+                    break :blk config_path;
+                } else |_| {
+                    gpa.free(config_path);
                 }
                 // Fall back to exe_dir/../data/mmcif_pdbx.json
                 const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
