@@ -9,10 +9,26 @@ pub fn loadFromFile(gpa: Allocator, path: []const u8) !dict.Dictionary {
         try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
-    const content = try file.readToEndAlloc(gpa, 64 * 1024 * 1024);
+    // Detect gzip by extension and decompress natively
+    const content = if (std.mem.endsWith(u8, path, ".gz"))
+        try readGzip(gpa, file)
+    else
+        try file.readToEndAlloc(gpa, 64 * 1024 * 1024);
     defer gpa.free(content);
 
     return loadFromString(gpa, content);
+}
+
+fn readGzip(gpa: Allocator, file: std.fs.File) ![]u8 {
+    var reader_buf: [4096]u8 = undefined;
+    var file_reader = file.reader(&reader_buf);
+    var window_buf: [std.compress.flate.max_window_len]u8 = undefined;
+    var decompressor = std.compress.flate.Decompress.init(
+        &file_reader.interface,
+        .gzip,
+        &window_buf,
+    );
+    return decompressor.reader.allocRemaining(gpa, @enumFromInt(64 * 1024 * 1024));
 }
 
 pub fn loadFromString(gpa: Allocator, content: []const u8) !dict.Dictionary {
