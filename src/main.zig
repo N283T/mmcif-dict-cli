@@ -16,11 +16,11 @@ const usage =
     \\
     \\Options:
     \\  --json                Output in JSON format
-    \\  --dict PATH           Path to mmcif_pdbx.json
+    \\  --dict PATH           Path to dictionary (.json or .json.gz)
     \\  --help                Show this help
     \\
     \\Environment:
-    \\  MMCIF_DICT_PATH       Default path to mmcif_pdbx.json
+    \\  MMCIF_DICT_PATH       Default path to dictionary file
     \\
 ;
 
@@ -135,9 +135,14 @@ pub fn main() !void {
     defer if (path_owned) gpa.free(path);
 
     var dictionary = json_loader.loadFromFile(gpa, path) catch |err| {
-        try ew.print("Error loading dictionary from {s}: {}\n", .{ path, err });
-        if (err == error.FileNotFound) {
+        if (err == error.DictionaryCorrupt) {
+            try ew.print("Error: dictionary file appears corrupt: {s}\n", .{path});
+            try ew.writeAll("Hint: Run 'mmcif-dict fetch' to re-download the dictionary.\n");
+        } else if (err == error.FileNotFound) {
+            try ew.print("Error: dictionary not found: {s}\n", .{path});
             try ew.writeAll("Hint: Run 'mmcif-dict fetch' to download the dictionary.\n");
+        } else {
+            try ew.print("Error loading dictionary from {s}: {}\n", .{ path, err });
         }
         try ew.flush();
         std.process.exit(1);

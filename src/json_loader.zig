@@ -2,6 +2,8 @@ const std = @import("std");
 const dict = @import("dict.zig");
 const Allocator = std.mem.Allocator;
 
+const max_dict_size = 64 * 1024 * 1024; // 64 MB
+
 pub fn loadFromFile(gpa: Allocator, path: []const u8) !dict.Dictionary {
     const file = if (std.fs.path.isAbsolute(path))
         try std.fs.openFileAbsolute(path, .{})
@@ -9,10 +11,27 @@ pub fn loadFromFile(gpa: Allocator, path: []const u8) !dict.Dictionary {
         try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
-    const content = try file.readToEndAlloc(gpa, 64 * 1024 * 1024);
+    // Detect gzip by extension and decompress natively
+    const content = if (std.mem.endsWith(u8, path, ".gz"))
+        readGzip(gpa, file) catch return error.DictionaryCorrupt
+    else
+        try file.readToEndAlloc(gpa, max_dict_size);
     defer gpa.free(content);
 
     return loadFromString(gpa, content);
+}
+
+fn readGzip(gpa: Allocator, file: std.fs.File) ![]u8 {
+    var reader_buf: [4096]u8 = undefined;
+    var file_reader = file.reader(&reader_buf);
+    var window_buf: [std.compress.flate.max_window_len]u8 = undefined;
+    var decompressor = std.compress.flate.Decompress.init(
+        &file_reader.interface,
+        .gzip,
+        &window_buf,
+    );
+    const limit: std.Io.Limit = @enumFromInt(max_dict_size);
+    return decompressor.reader.allocRemaining(gpa, limit);
 }
 
 pub fn loadFromString(gpa: Allocator, content: []const u8) !dict.Dictionary {
@@ -313,4 +332,54 @@ test "loadFromString with missing root key" {
     ;
     const result = loadFromString(allocator, json);
     try std.testing.expectError(error.InvalidInput, result);
+}
+
+test "loadFromFile with gzip" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{"data_mmcif_pdbx.dic":{
+        \\  "save_gz_cat":{
+        \\    "category":{"id":["gz_cat"],"description":["Gzip test"],"mandatory_code":["no"]},
+        \\    "category_key":{"name":["_gz_cat.id"]}
+        \\  },
+        \\  "save__gz_cat.id":{
+        \\    "item":{"name":["_gz_cat.id"],"category_id":["gz_cat"],"mandatory_code":["yes"]},
+        \\    "item_description":{"description":["Primary key"]},
+        \\    "item_type":{"code":["int"]}
+        \\  }
+        \\}}
+    ;
+
+    // Write JSON to temp file, compress with system gzip
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const json_file = try tmp_dir.dir.createFile("test.json", .{});
+    try json_file.writeAll(json);
+    json_file.close();
+
+    // Use system gzip to create .gz file
+    const real_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(real_dir);
+    const json_path = try std.fmt.allocPrint(allocator, "{s}/test.json", .{real_dir});
+    defer allocator.free(json_path);
+
+    var gzip_proc = std.process.Child.init(&.{ "gzip", json_path }, allocator);
+    try gzip_proc.spawn();
+    const gzip_term = try gzip_proc.wait();
+    if (gzip_term != .Exited or gzip_term.Exited != 0) return error.GzipFailed;
+
+    // Load the .gz file
+    const gz_path = try std.fmt.allocPrint(allocator, "{s}/test.json.gz", .{real_dir});
+    defer allocator.free(gz_path);
+
+    var d = try loadFromFile(allocator, gz_path);
+    defer d.deinit();
+
+    const cat = d.getCategory("gz_cat").?;
+    try std.testing.expectEqualStrings("gz_cat", cat.id);
+    try std.testing.expectEqualStrings("Gzip test", cat.description);
+
+    const item = d.getItem("_gz_cat.id").?;
+    try std.testing.expectEqualStrings("_gz_cat.id", item.name);
 }

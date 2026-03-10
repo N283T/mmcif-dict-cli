@@ -18,7 +18,8 @@ zig build -Doptimize=ReleaseFast
 mmcif-dict fetch
 ```
 
-This downloads from PDBj and saves to `~/.config/mmcif-dict/mmcif_pdbx.json`.
+This downloads from PDBj and saves as `~/.config/mmcif-dict/mmcif_pdbx.json.gz` (~540 KB).
+Decompression is handled natively at load time.
 
 The binary is at `zig-out/bin/mmcif-dict`.
 
@@ -51,17 +52,19 @@ mmcif-dict --json category atom_site
 
 The dictionary file is resolved in this order:
 
-1. `--dict PATH` command-line option
+1. `--dict PATH` command-line option (`.json` or `.json.gz`)
 2. `$MMCIF_DICT_PATH` environment variable
-3. `~/.config/mmcif-dict/mmcif_pdbx.json` (installed by `fetch`)
+3. `~/.config/mmcif-dict/mmcif_pdbx.json.gz` (installed by `fetch`)
 4. `<exe_dir>/../data/mmcif_pdbx.json` (development fallback)
+
+Files ending in `.gz` are decompressed automatically using Zig's native flate implementation.
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
 | `--json` | Output in JSON format |
-| `--dict PATH` | Path to `mmcif_pdbx.json` |
+| `--dict PATH` | Path to dictionary (`.json` or `.json.gz`) |
 | `--help` | Show usage |
 
 ## Environment Variables
