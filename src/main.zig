@@ -75,14 +75,26 @@ pub fn main() !void {
     }
 
     // Resolve dictionary path: --dict > $MMCIF_DICT_PATH > exe_dir/../data/mmcif_pdbx.json
-    const path = dict_path orelse std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH") catch blk: {
-        const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
-            try ew.writeAll("Error: cannot determine executable directory. Use --dict or set MMCIF_DICT_PATH.\n");
-            try ew.flush();
-            std.process.exit(1);
+    // Track allocated path for deferred free
+    var path_owned = false;
+    const path = dict_path orelse blk: {
+        const env_path = std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => {
+                const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
+                    try ew.writeAll("Error: cannot determine executable directory. Use --dict or set MMCIF_DICT_PATH.\n");
+                    try ew.flush();
+                    std.process.exit(1);
+                };
+                defer gpa.free(exe_dir);
+                path_owned = true;
+                break :blk try std.fmt.allocPrint(gpa, "{s}/../data/mmcif_pdbx.json", .{exe_dir});
+            },
+            else => return err,
         };
-        break :blk try std.fmt.allocPrint(gpa, "{s}/../data/mmcif_pdbx.json", .{exe_dir});
+        path_owned = true;
+        break :blk env_path;
     };
+    defer if (path_owned) gpa.free(path);
 
     var dictionary = json_loader.loadFromFile(gpa, path) catch |err| {
         try ew.print("Error loading dictionary from {s}: {}\n", .{ path, err });
@@ -157,9 +169,12 @@ fn runItem(
         std.process.exit(1);
     }
     var name = cmd_args[0];
+    var name_owned = false;
     if (name.len > 0 and name[0] != '_') {
         name = try std.fmt.allocPrint(gpa, "_{s}", .{name});
+        name_owned = true;
     }
+    defer if (name_owned) gpa.free(name);
     const item = dictionary.getItem(name) orelse {
         try ew.print("Item not found: {s}\n", .{name});
         try ew.flush();

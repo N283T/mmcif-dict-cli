@@ -186,6 +186,9 @@ fn writeJsonString(w: *std.io.Writer, s: []const u8) !void {
             '\n' => try w.writeAll("\\n"),
             '\r' => try w.writeAll("\\r"),
             '\t' => try w.writeAll("\\t"),
+            0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f => {
+                try w.print("\\u{x:0>4}", .{c});
+            },
             else => try w.writeByte(c),
         }
     }
@@ -199,4 +202,41 @@ fn writeJsonStringArray(w: *std.io.Writer, arr: []const []const u8) !void {
         try writeJsonString(w, s);
     }
     try w.writeByte(']');
+}
+
+test "writeJsonString escapes special characters" {
+    // Write to a temporary file to get a *std.io.Writer
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("test_json.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var w = file.writer(&buf);
+
+    try writeJsonString(&w.interface, "hello\x00world\x01\n\"\\");
+    try w.interface.flush();
+
+    try file.seekTo(0);
+    var read_buf: [256]u8 = undefined;
+    const n = try file.readAll(&read_buf);
+    try std.testing.expectEqualStrings("\"hello\\u0000world\\u0001\\n\\\"\\\\\"", read_buf[0..n]);
+}
+
+test "writeJsonString handles tab and backslash" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("test_json2.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var w = file.writer(&buf);
+
+    try writeJsonString(&w.interface, "a\tb\\c");
+    try w.interface.flush();
+
+    try file.seekTo(0);
+    var read_buf: [256]u8 = undefined;
+    const n = try file.readAll(&read_buf);
+    try std.testing.expectEqualStrings("\"a\\tb\\\\c\"", read_buf[0..n]);
 }

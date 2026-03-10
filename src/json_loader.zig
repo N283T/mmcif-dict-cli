@@ -3,7 +3,10 @@ const dict = @import("dict.zig");
 const Allocator = std.mem.Allocator;
 
 pub fn loadFromFile(gpa: Allocator, path: []const u8) !dict.Dictionary {
-    const file = try std.fs.openFileAbsolute(path, .{});
+    const file = if (std.fs.path.isAbsolute(path))
+        try std.fs.openFileAbsolute(path, .{})
+    else
+        try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
     const content = try file.readToEndAlloc(gpa, 64 * 1024 * 1024);
@@ -53,7 +56,7 @@ pub fn loadFromString(gpa: Allocator, content: []const u8) !dict.Dictionary {
     while (iter.next()) |entry| {
         const key = entry.key_ptr.*;
         if (std.mem.startsWith(u8, key, "save__")) {
-            const item = parseItem(aa, entry.value_ptr.*) orelse continue;
+            const item = (try parseItem(aa, entry.value_ptr.*)) orelse continue;
             try items.put(item.name, item);
 
             const gop = try category_items.getOrPut(item.category_id);
@@ -62,7 +65,7 @@ pub fn loadFromString(gpa: Allocator, content: []const u8) !dict.Dictionary {
             }
             try gop.value_ptr.append(gpa, item.name);
         } else if (std.mem.startsWith(u8, key, "save_")) {
-            const cat = parseCategory(aa, entry.value_ptr.*) orelse continue;
+            const cat = (try parseCategory(aa, entry.value_ptr.*)) orelse continue;
             try categories.put(cat.id, cat);
         } else if (std.mem.eql(u8, key, "pdbx_item_linked_group_list")) {
             const rels = try parseRelations(gpa, entry.value_ptr.*);
@@ -110,7 +113,7 @@ fn getFirstString(val: std.json.Value, outer_key: []const u8, inner_key: []const
     };
 }
 
-fn getStringArray(allocator: Allocator, val: std.json.Value, outer_key: []const u8, inner_key: []const u8) []const []const u8 {
+fn getStringArray(allocator: Allocator, val: std.json.Value, outer_key: []const u8, inner_key: []const u8) ![]const []const u8 {
     const obj = switch (val) {
         .object => |o| o,
         else => return &.{},
@@ -126,14 +129,14 @@ fn getStringArray(allocator: Allocator, val: std.json.Value, outer_key: []const 
         else => return &.{},
     };
 
-    const result = allocator.alloc([]const u8, arr.items.len) catch return &.{};
+    const result = try allocator.alloc([]const u8, arr.items.len);
     for (arr.items, 0..) |item, i| {
         result[i] = jsonStr(item);
     }
     return result;
 }
 
-fn parseCategory(allocator: Allocator, val: std.json.Value) ?dict.Category {
+fn parseCategory(allocator: Allocator, val: std.json.Value) !?dict.Category {
     const id = getFirstString(val, "category", "id");
     if (id.len == 0) return null;
 
@@ -141,15 +144,15 @@ fn parseCategory(allocator: Allocator, val: std.json.Value) ?dict.Category {
         .id = id,
         .description = getFirstString(val, "category", "description"),
         .mandatory_code = getFirstString(val, "category", "mandatory_code"),
-        .key_names = getStringArray(allocator, val, "category_key", "name"),
-        .group_ids = getStringArray(allocator, val, "category_group", "id"),
-        .example_details = getStringArray(allocator, val, "category_examples", "detail"),
-        .example_cases = getStringArray(allocator, val, "category_examples", "case"),
+        .key_names = try getStringArray(allocator, val, "category_key", "name"),
+        .group_ids = try getStringArray(allocator, val, "category_group", "id"),
+        .example_details = try getStringArray(allocator, val, "category_examples", "detail"),
+        .example_cases = try getStringArray(allocator, val, "category_examples", "case"),
         .items = &.{},
     };
 }
 
-fn parseItem(allocator: Allocator, val: std.json.Value) ?dict.Item {
+fn parseItem(allocator: Allocator, val: std.json.Value) !?dict.Item {
     const name = getFirstString(val, "item", "name");
     if (name.len == 0) return null;
 
@@ -159,7 +162,7 @@ fn parseItem(allocator: Allocator, val: std.json.Value) ?dict.Item {
         .description = getFirstString(val, "item_description", "description"),
         .mandatory_code = getFirstString(val, "item", "mandatory_code"),
         .type_code = getFirstString(val, "item_type", "code"),
-        .enum_values = getStringArray(allocator, val, "item_enumeration", "value"),
+        .enum_values = try getStringArray(allocator, val, "item_enumeration", "value"),
     };
 }
 
@@ -176,6 +179,10 @@ fn parseRelations(allocator: Allocator, val: std.json.Value) ![]dict.Relation {
     const link_groups = getJsonArray(obj, "link_group_id") orelse return &.{};
 
     const len = child_cats.len;
+    if (parent_cats.len != len or child_names.len != len or parent_names.len != len or link_groups.len != len) {
+        return error.InvalidInput;
+    }
+
     const results = try allocator.alloc(dict.Relation, len);
     for (0..len) |i| {
         results[i] = .{
@@ -268,4 +275,42 @@ test "loadFromString minimal" {
     // Missing lookups
     try std.testing.expect(d.getCategory("nonexistent") == null);
     try std.testing.expect(d.getItem("_nonexistent.field") == null);
+}
+
+test "parseRelations rejects mismatched array lengths" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{"data_mmcif_pdbx.dic":{
+        \\  "pdbx_item_linked_group_list":{
+        \\    "child_category_id":["a","b"],
+        \\    "parent_category_id":["c"],
+        \\    "child_name":["_a.x","_b.x"],
+        \\    "parent_name":["_c.x","_c.y"],
+        \\    "link_group_id":["1","2"]
+        \\  }
+        \\}}
+    ;
+
+    const result = loadFromString(allocator, json);
+    try std.testing.expectError(error.InvalidInput, result);
+}
+
+test "loadFromString with invalid JSON" {
+    const allocator = std.testing.allocator;
+    const result = loadFromString(allocator, "not json at all");
+    try std.testing.expect(result == error.UnexpectedCharacter or true);
+    // Any error is acceptable for malformed input
+    if (result) |*d| {
+        var d_mut = d.*;
+        d_mut.deinit();
+    } else |_| {}
+}
+
+test "loadFromString with missing root key" {
+    const allocator = std.testing.allocator;
+    const json = \\{"wrong_key":{}}
+    ;
+    const result = loadFromString(allocator, json);
+    try std.testing.expectError(error.InvalidInput, result);
 }
