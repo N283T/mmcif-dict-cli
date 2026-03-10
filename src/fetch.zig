@@ -76,34 +76,42 @@ pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writ
         return error.FetchFailed;
     };
 
-    if (curl_term != .Exited or curl_term.Exited != 0) {
-        try ew.writeAll("Download failed. Check your network connection.\n");
+    const curl_ok = curl_term == .Exited and curl_term.Exited == 0;
+    if (!curl_ok) {
+        switch (curl_term) {
+            .Exited => |code| try ew.print("Download failed (curl exit code {d}). Check your network connection.\n", .{code}),
+            .Signal => |sig| try ew.print("Download failed (curl killed by signal {d}).\n", .{sig}),
+            else => try ew.writeAll("Download failed (curl terminated unexpectedly).\n"),
+        }
         try ew.flush();
         return error.FetchFailed;
     }
 
-    // Validate file size
-    const stat = std.fs.cwd().statFile(tmp_path) catch |err| {
-        try ew.print("Error: cannot stat downloaded file: {}\n", .{err});
-        try ew.flush();
-        return error.FetchFailed;
-    };
-
-    if (stat.size < min_valid_size) {
-        try ew.print("Error: downloaded file too small ({d} bytes). Expected > 100 KB.\n", .{stat.size});
-        try ew.flush();
-        return error.FetchFailed;
-    }
-
-    // Validate gzip magic bytes (1f 8b)
+    // Validate: open file, check size and gzip magic bytes
     const verify_file = std.fs.cwd().openFile(tmp_path, .{}) catch |err| {
         try ew.print("Error: cannot open downloaded file: {}\n", .{err});
         try ew.flush();
         return error.FetchFailed;
     };
     defer verify_file.close();
+
+    const stat = verify_file.stat() catch |err| {
+        try ew.print("Error: cannot stat downloaded file: {}\n", .{err});
+        try ew.flush();
+        return error.FetchFailed;
+    };
+    if (stat.size < min_valid_size) {
+        try ew.print("Error: downloaded file too small ({d} bytes). Expected > 100 KB.\n", .{stat.size});
+        try ew.flush();
+        return error.FetchFailed;
+    }
+
     var magic_buf: [2]u8 = undefined;
-    const n = try verify_file.read(&magic_buf);
+    const n = verify_file.read(&magic_buf) catch |err| {
+        try ew.print("Error: cannot read downloaded file: {}\n", .{err});
+        try ew.flush();
+        return error.FetchFailed;
+    };
     if (n < 2 or magic_buf[0] != 0x1f or magic_buf[1] != 0x8b) {
         try ew.writeAll("Error: downloaded file is not a valid gzip file.\n");
         try ew.flush();
@@ -116,7 +124,7 @@ pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writ
         try ew.flush();
         return error.FetchFailed;
     };
-    tmp_created = false;
+    tmp_created = false; // Rename succeeded, don't delete
 
     const size_kb = @as(f64, @floatFromInt(stat.size)) / 1024.0;
     try w.print("Done. ({d:.0} KB)\n", .{size_kb});
