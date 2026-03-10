@@ -1,0 +1,5 @@
+zig-out/
+zig-cache/
+.zig-cache/
+data/mmcif_pdbx.json
+data/mmcif_pdbx.json.gz
