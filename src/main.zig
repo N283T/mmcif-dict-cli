@@ -1,5 +1,6 @@
 const std = @import("std");
 const dict = @import("dict.zig");
+const fetch = @import("fetch.zig");
 const json_loader = @import("json_loader.zig");
 const output = @import("output.zig");
 
@@ -7,6 +8,7 @@ const usage =
     \\Usage: mmcif-dict <command> [options] [arguments]
     \\
     \\Commands:
+    \\  fetch                 Download dictionary to ~/.config/mmcif-dict/
     \\  category [NAME]       List all categories or show details for NAME
     \\  item ITEM_NAME        Show item details (e.g., _atom_site.label_atom_id)
     \\  relations CATEGORY    Show parent-child relationships for CATEGORY
@@ -74,14 +76,50 @@ pub fn main() !void {
         std.process.exit(1);
     }
 
-    // Resolve dictionary path: --dict > $MMCIF_DICT_PATH > exe_dir/../data/mmcif_pdbx.json
-    // Track allocated path for deferred free
+    // Handle fetch command before loading dictionary
+    const command = positional.items[0];
+    if (std.mem.eql(u8, command, "fetch")) {
+        if (positional.items.len > 1) {
+            try ew.writeAll("Error: 'fetch' takes no arguments.\n");
+            try ew.flush();
+            std.process.exit(1);
+        }
+        fetch.fetchDictionary(gpa, w, ew) catch |err| {
+            if (err != error.FetchFailed) {
+                try ew.print("Error: {}\n", .{err});
+                try ew.flush();
+            }
+            std.process.exit(1);
+        };
+        return;
+    }
+
+    // Resolve dictionary path: --dict > $MMCIF_DICT_PATH > ~/.config/mmcif-dict/ > exe_dir/../data/
     var path_owned = false;
     const path = dict_path orelse blk: {
         const env_path = std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH") catch |err| switch (err) {
             error.EnvironmentVariableNotFound => {
+                // Try ~/.config/mmcif-dict/mmcif_pdbx.json (single alloc, no TOCTOU)
+                const config_path = fetch.getConfigDictPath(gpa) catch {
+                    // Fall through to exe_dir fallback
+                    const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
+                        try ew.writeAll("Error: dictionary not found. Run 'mmcif-dict fetch' to download, or use --dict/MMCIF_DICT_PATH.\n");
+                        try ew.flush();
+                        std.process.exit(1);
+                    };
+                    defer gpa.free(exe_dir);
+                    path_owned = true;
+                    break :blk try std.fmt.allocPrint(gpa, "{s}/../data/mmcif_pdbx.json", .{exe_dir});
+                };
+                if (std.fs.cwd().access(config_path, .{})) |_| {
+                    path_owned = true;
+                    break :blk config_path;
+                } else |_| {
+                    gpa.free(config_path);
+                }
+                // Fall back to exe_dir/../data/mmcif_pdbx.json
                 const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
-                    try ew.writeAll("Error: cannot determine executable directory. Use --dict or set MMCIF_DICT_PATH.\n");
+                    try ew.writeAll("Error: dictionary not found. Run 'mmcif-dict fetch' to download, or use --dict/MMCIF_DICT_PATH.\n");
                     try ew.flush();
                     std.process.exit(1);
                 };
@@ -98,12 +136,14 @@ pub fn main() !void {
 
     var dictionary = json_loader.loadFromFile(gpa, path) catch |err| {
         try ew.print("Error loading dictionary from {s}: {}\n", .{ path, err });
+        if (err == error.FileNotFound) {
+            try ew.writeAll("Hint: Run 'mmcif-dict fetch' to download the dictionary.\n");
+        }
         try ew.flush();
         std.process.exit(1);
     };
     defer dictionary.deinit();
 
-    const command = positional.items[0];
     const cmd_args = positional.items[1..];
 
     if (std.mem.eql(u8, command, "category")) {
@@ -222,6 +262,7 @@ fn runSearch(
 
 test {
     _ = @import("dict.zig");
+    _ = @import("fetch.zig");
     _ = @import("json_loader.zig");
     _ = @import("output.zig");
 }
