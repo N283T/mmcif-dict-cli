@@ -337,43 +337,7 @@ test "loadFromString with missing root key" {
 test "loadFromFile with gzip" {
     const allocator = std.testing.allocator;
 
-    const json =
-        \\{"data_mmcif_pdbx.dic":{
-        \\  "save_gz_cat":{
-        \\    "category":{"id":["gz_cat"],"description":["Gzip test"],"mandatory_code":["no"]},
-        \\    "category_key":{"name":["_gz_cat.id"]}
-        \\  },
-        \\  "save__gz_cat.id":{
-        \\    "item":{"name":["_gz_cat.id"],"category_id":["gz_cat"],"mandatory_code":["yes"]},
-        \\    "item_description":{"description":["Primary key"]},
-        \\    "item_type":{"code":["int"]}
-        \\  }
-        \\}}
-    ;
-
-    // Write JSON to temp file, compress with system gzip
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    const json_file = try tmp_dir.dir.createFile("test.json", .{});
-    try json_file.writeAll(json);
-    json_file.close();
-
-    // Use system gzip to create .gz file
-    const real_dir = try tmp_dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(real_dir);
-    const json_path = try std.fmt.allocPrint(allocator, "{s}/test.json", .{real_dir});
-    defer allocator.free(json_path);
-
-    var gzip_proc = std.process.Child.init(&.{ "gzip", json_path }, allocator);
-    try gzip_proc.spawn();
-    const gzip_term = try gzip_proc.wait();
-    if (gzip_term != .Exited or gzip_term.Exited != 0) return error.GzipFailed;
-
-    // Load the .gz file
-    const gz_path = try std.fmt.allocPrint(allocator, "{s}/test.json.gz", .{real_dir});
-    defer allocator.free(gz_path);
-
-    var d = try loadFromFile(allocator, gz_path);
+    var d = try loadFromFile(allocator, "testdata/minimal.json.gz");
     defer d.deinit();
 
     const cat = d.getCategory("gz_cat").?;
@@ -382,4 +346,14 @@ test "loadFromFile with gzip" {
 
     const item = d.getItem("_gz_cat.id").?;
     try std.testing.expectEqualStrings("_gz_cat.id", item.name);
+}
+
+test "loadFromFile with plain json" {
+    const allocator = std.testing.allocator;
+
+    var d = try loadFromFile(allocator, "testdata/minimal.json");
+    defer d.deinit();
+
+    const cat = d.getCategory("gz_cat").?;
+    try std.testing.expectEqualStrings("gz_cat", cat.id);
 }

@@ -1,0 +1,11 @@
+{"data_mmcif_pdbx.dic":{
+  "save_gz_cat":{
+    "category":{"id":["gz_cat"],"description":["Gzip test"],"mandatory_code":["no"]},
+    "category_key":{"name":["_gz_cat.id"]}
+  },
+  "save__gz_cat.id":{
+    "item":{"name":["_gz_cat.id"],"category_id":["gz_cat"],"mandatory_code":["yes"]},
+    "item_description":{"description":["Primary key"]},
+    "item_type":{"code":["int"]}
+  }
+}}
