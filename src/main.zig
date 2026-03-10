@@ -7,3 +7,8 @@ pub fn main() !void {
     try w.interface.print("mmcif-dict v0.1.0\n", .{});
     try w.interface.flush();
 }
+
+test {
+    _ = @import("dict.zig");
+    _ = @import("json_loader.zig");
+}
