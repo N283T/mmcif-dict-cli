@@ -6,25 +6,28 @@ Uses PDBj's JSON representation of the mmCIF dictionary for fast lookups of cate
 
 ## Setup
 
-1. Download and decompress the PDBj dictionary JSON:
-
-```bash
-mkdir -p data
-curl -o data/mmcif_pdbx.json.gz https://pdbj.org/dictionaries/mmcif_pdbx.json.gz
-gunzip data/mmcif_pdbx.json.gz
-```
-
-2. Build:
+1. Build:
 
 ```bash
 zig build -Doptimize=ReleaseFast
 ```
+
+2. Download the dictionary:
+
+```bash
+mmcif-dict fetch
+```
+
+This downloads from PDBj and saves to `~/.config/mmcif-dict/mmcif_pdbx.json`.
 
 The binary is at `zig-out/bin/mmcif-dict`.
 
 ## Usage
 
 ```bash
+# Download/update dictionary
+mmcif-dict fetch
+
 # List all categories (604 categories)
 mmcif-dict category
 
@@ -44,6 +47,15 @@ mmcif-dict search "electron density"
 mmcif-dict --json category atom_site
 ```
 
+## Dictionary Path Resolution
+
+The dictionary file is resolved in this order:
+
+1. `--dict PATH` command-line option
+2. `$MMCIF_DICT_PATH` environment variable
+3. `~/.config/mmcif-dict/mmcif_pdbx.json` (installed by `fetch`)
+4. `<exe_dir>/../data/mmcif_pdbx.json` (development fallback)
+
 ## Options
 
 | Option | Description |
@@ -56,7 +68,7 @@ mmcif-dict --json category atom_site
 
 | Variable | Description |
 |----------|-------------|
-| `MMCIF_DICT_PATH` | Default path to `mmcif_pdbx.json` (overrides exe-relative lookup) |
+| `MMCIF_DICT_PATH` | Default path to `mmcif_pdbx.json` (overrides config/exe-relative lookup) |
 
 ## Data Source
 
