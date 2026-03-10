@@ -33,7 +33,7 @@ pub fn configDictExists(allocator: Allocator) bool {
 }
 
 /// Fetch the dictionary from PDBj and save as .gz to ~/.config/mmcif-dict/.
-/// Only requires curl (decompression is handled natively by Zig at load time).
+/// Uses std.http.Client — no external dependencies required.
 pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writer) !void {
     const dest_path = try getConfigDictPath(allocator);
     defer allocator.free(dest_path);
@@ -58,36 +58,45 @@ pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writ
     try w.print("Destination: {s}\n", .{dest_path});
     try w.flush();
 
-    // Download with curl, save .gz directly (no decompression needed)
-    var curl = std.process.Child.init(&.{ "curl", "-sfL", "-o", tmp_path, dict_url }, allocator);
-    curl.stderr_behavior = .Inherit;
-    curl.stdout_behavior = .Inherit;
+    // Download with std.http.Client
+    var client: std.http.Client = .{ .allocator = allocator };
+    defer client.deinit();
 
-    curl.spawn() catch |err| {
-        try ew.print("Error: failed to run curl: {}. Ensure curl is installed.\n", .{err});
+    const tmp_file = std.fs.cwd().createFile(tmp_path, .{}) catch |err| {
+        try ew.print("Error creating temp file: {}\n", .{err});
         try ew.flush();
         return error.FetchFailed;
     };
     tmp_created = true;
 
-    const curl_term = curl.wait() catch |err| {
-        try ew.print("Error waiting for curl: {}\n", .{err});
+    var write_buf: [65536]u8 = undefined;
+    var file_writer = tmp_file.writer(&write_buf);
+
+    const result = client.fetch(.{
+        .location = .{ .url = dict_url },
+        .response_writer = &file_writer.interface,
+    }) catch |err| {
+        tmp_file.close();
+        try ew.print("Download failed: {}. Check your network connection.\n", .{err});
         try ew.flush();
         return error.FetchFailed;
     };
 
-    const curl_ok = curl_term == .Exited and curl_term.Exited == 0;
-    if (!curl_ok) {
-        switch (curl_term) {
-            .Exited => |code| try ew.print("Download failed (curl exit code {d}). Check your network connection.\n", .{code}),
-            .Signal => |sig| try ew.print("Download failed (curl killed by signal {d}).\n", .{sig}),
-            else => try ew.writeAll("Download failed (curl terminated unexpectedly).\n"),
-        }
+    file_writer.interface.flush() catch |err| {
+        tmp_file.close();
+        try ew.print("Error writing downloaded data: {}\n", .{err});
+        try ew.flush();
+        return error.FetchFailed;
+    };
+    tmp_file.close();
+
+    if (result.status != .ok) {
+        try ew.print("Download failed (HTTP {d}).\n", .{@intFromEnum(result.status)});
         try ew.flush();
         return error.FetchFailed;
     }
 
-    // Validate: open file, check size and gzip magic bytes
+    // Validate: check size and gzip magic bytes
     const verify_file = std.fs.cwd().openFile(tmp_path, .{}) catch |err| {
         try ew.print("Error: cannot open downloaded file: {}\n", .{err});
         try ew.flush();
