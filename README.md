@@ -76,3 +76,7 @@ Files ending in `.gz` are decompressed automatically using Zig's native flate im
 ## Data Source
 
 Dictionary data from [PDBj](https://pdbj.org/) (`mmcif_pdbx.json.gz`), a JSON representation of the [wwPDB mmCIF PDBx dictionary](http://mmcif.pdb.org/).
+
+## License
+
+[MIT](LICENSE)
