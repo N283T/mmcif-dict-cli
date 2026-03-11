@@ -26,6 +26,31 @@ INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/N283T/mm
 
 Supported platforms: Linux (x86_64, aarch64), macOS (aarch64).
 
+### Nix
+
+```bash
+# Run directly
+nix run github:N283T/mmcif-dict-cli -- category atom_site
+
+# Or install to profile
+nix profile install github:N283T/mmcif-dict-cli
+```
+
+With Home Manager, add the flake input and package:
+
+```nix
+# flake.nix
+inputs.mmcif-dict-cli = {
+  url = "github:N283T/mmcif-dict-cli";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# home.nix or dev.nix
+home.packages = [
+  inputs.mmcif-dict-cli.packages.${system}.default
+];
+```
+
 ### Build from source
 
 Requires [Zig](https://ziglang.org/) 0.15.2+.
