@@ -209,34 +209,10 @@ fn runShow(
     const name = cmd_args[0];
     const stripped = if (name.len > 0 and name[0] == '_') name[1..] else name;
     // If it contains a dot, treat as item; otherwise as category
-    if (std.mem.indexOfScalar(u8, stripped, '.')) |_| {
-        // Item: ensure leading '_'
-        var item_name = name;
-        var name_owned = false;
-        if (name[0] != '_') {
-            item_name = try std.fmt.allocPrint(gpa, "_{s}", .{name});
-            name_owned = true;
-        }
-        defer if (name_owned) gpa.free(item_name);
-        const item = dictionary.getItem(item_name) orelse {
-            try ew.print("Item not found: {s}\n", .{name});
-            try ew.flush();
-            std.process.exit(1);
-        };
-        try output.printItem(w, item, format);
+    if (std.mem.indexOfScalar(u8, stripped, '.') != null) {
+        try runItem(gpa, dictionary, cmd_args, w, ew, format);
     } else {
-        const cat_name = if (name.len > 0 and name[0] == '_') name[1..] else name;
-        if (cat_name.len == 0) {
-            try ew.print("Invalid name: {s}\n", .{name});
-            try ew.flush();
-            std.process.exit(1);
-        }
-        const cat = dictionary.getCategory(cat_name) orelse {
-            try ew.print("Category not found: {s}\n", .{name});
-            try ew.flush();
-            std.process.exit(1);
-        };
-        try output.printCategory(w, cat, format);
+        try runCategory(gpa, dictionary, cmd_args, w, ew, format);
     }
 }
 
