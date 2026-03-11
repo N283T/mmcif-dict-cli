@@ -1,13 +1,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const dict_url = "https://data.pdbj.org/pdbjplus/dictionaries/mmcif_pdbx.json.gz";
+pub const default_url = "https://data.pdbj.org/pdbjplus/dictionaries/mmcif_pdbx.json.gz";
 const config_dir_name = "mmcif-dict";
 const dict_filename = "mmcif_pdbx.json.gz";
-const min_valid_size = 100 * 1024; // 100 KB — real .gz is ~540 KB
+const min_valid_size = 1024; // 1 KB — smallest valid dictionary .gz
 
-/// Return the default config path: ~/.config/mmcif-dict/mmcif_pdbx.json.gz
-pub fn getConfigDictPath(allocator: Allocator) ![]const u8 {
+/// Return the config directory: ~/.config/mmcif-dict/
+fn getConfigDir(allocator: Allocator) ![]const u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return error.HomeNotFound,
         else => return err,
@@ -21,7 +21,37 @@ pub fn getConfigDictPath(allocator: Allocator) ![]const u8 {
     };
     defer allocator.free(config_home);
 
-    return std.fmt.allocPrint(allocator, "{s}/{s}/{s}", .{ config_home, config_dir_name, dict_filename });
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ config_home, config_dir_name });
+}
+
+/// Return the default config path: ~/.config/mmcif-dict/mmcif_pdbx.json.gz
+pub fn getConfigDictPath(allocator: Allocator) ![]const u8 {
+    const dir = try getConfigDir(allocator);
+    defer allocator.free(dir);
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, dict_filename });
+}
+
+/// Return the config path for a given URL (uses the URL's filename).
+fn getConfigDictPathForUrl(allocator: Allocator, url: []const u8) ![]const u8 {
+    const dir = try getConfigDir(allocator);
+    defer allocator.free(dir);
+    const filename = filenameFromUrl(url) orelse dict_filename;
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, filename });
+}
+
+/// Extract filename from URL path (e.g. "mmcif_ihm_ext.json.gz" from a full URL).
+fn filenameFromUrl(url: []const u8) ?[]const u8 {
+    // Find the path portion (after "://host")
+    const path_start = if (std.mem.indexOf(u8, url, "://")) |i| blk: {
+        const after_scheme = url[i + 3 ..];
+        break :blk if (std.mem.indexOfScalar(u8, after_scheme, '/')) |j| i + 3 + j else null;
+    } else null;
+    const path = if (path_start) |s| url[s..] else url;
+    // Last component of the path
+    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return null;
+    const name = path[last_slash + 1 ..];
+    if (name.len == 0) return null;
+    return name;
 }
 
 /// Check if the config dictionary file exists.
@@ -32,11 +62,11 @@ pub fn configDictExists(allocator: Allocator) bool {
     return true;
 }
 
-/// Fetch the dictionary from PDBj and save as .gz to ~/.config/mmcif-dict/.
+/// Fetch a dictionary and save to ~/.config/mmcif-dict/.
 /// Uses std.http.Client — no external dependencies required.
 /// The .gz is decompressed at load time (see json_loader.zig).
-pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writer) !void {
-    const dest_path = try getConfigDictPath(allocator);
+pub fn fetchDictionary(allocator: Allocator, url: []const u8, w: *std.io.Writer, ew: *std.io.Writer) !void {
+    const dest_path = try getConfigDictPathForUrl(allocator, url);
     defer allocator.free(dest_path);
 
     // Create parent directory
@@ -55,7 +85,7 @@ pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writ
         std.fs.cwd().deleteFile(tmp_path) catch {};
     };
 
-    try w.print("Downloading {s}\n", .{dict_url});
+    try w.print("Downloading {s}\n", .{url});
     try w.print("Destination: {s}\n", .{dest_path});
     try w.flush();
 
@@ -78,7 +108,7 @@ pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writ
         // fetch() streams the response body regardless of HTTP status,
         // so we check status before flushing to avoid persisting error pages.
         const result = client.fetch(.{
-            .location = .{ .url = dict_url },
+            .location = .{ .url = url },
             .response_writer = &file_writer.interface,
         }) catch |err| {
             try ew.print("Download failed: {}. Check your network connection.\n", .{err});

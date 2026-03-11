@@ -8,7 +8,7 @@ const usage =
     \\Usage: mmcif-dict <command> [options] [arguments]
     \\
     \\Commands:
-    \\  fetch                 Download dictionary to ~/.config/mmcif-dict/
+    \\  fetch [URL]           Download dictionary to ~/.config/mmcif-dict/
     \\  category [NAME]       List all categories or show details for NAME
     \\  item ITEM_NAME        Show item details (e.g., _atom_site.label_atom_id)
     \\  relations CATEGORY    Show parent-child relationships for CATEGORY
@@ -79,12 +79,13 @@ pub fn main() !void {
     // Handle fetch command before loading dictionary
     const command = positional.items[0];
     if (std.mem.eql(u8, command, "fetch")) {
-        if (positional.items.len > 1) {
-            try ew.writeAll("Error: 'fetch' takes no arguments.\n");
+        if (positional.items.len > 2) {
+            try ew.writeAll("Usage: mmcif-dict fetch [URL]\n");
             try ew.flush();
             std.process.exit(1);
         }
-        fetch.fetchDictionary(gpa, w, ew) catch |err| {
+        const url = if (positional.items.len > 1) positional.items[1] else fetch.default_url;
+        fetch.fetchDictionary(gpa, url, w, ew) catch |err| {
             if (err != error.FetchFailed) {
                 try ew.print("Error: {}\n", .{err});
                 try ew.flush();
