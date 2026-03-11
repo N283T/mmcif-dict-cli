@@ -357,6 +357,14 @@ test "loadFromString accepts any root key" {
     try std.testing.expectEqualStrings("my_cat", cat.id);
 }
 
+test "loadFromString with non-object root value" {
+    const allocator = std.testing.allocator;
+    const json = \\{"data_foo.dic":"not_an_object"}
+    ;
+    const result = loadFromString(allocator, json);
+    try std.testing.expectError(error.InvalidInput, result);
+}
+
 test "loadFromFile with gzip" {
     const allocator = std.testing.allocator;
 
