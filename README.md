@@ -58,6 +58,93 @@ mmcif-dict --json category atom_site
 mmcif-dict dict2json mmcif_pdbx.dic
 ```
 
+## Examples
+
+### List categories
+
+```
+$ mmcif-dict category | head
+array_data
+array_intensities
+array_structure
+array_structure_list
+array_structure_list_axis
+array_structure_list_section
+atom_site
+atom_site_anisotrop
+atom_sites
+atom_sites_alt
+```
+
+604 categories available in the PDBx dictionary.
+
+### Category details
+
+```
+$ mmcif-dict category atom_site
+Category: atom_site
+Mandatory: no
+Keys: _atom_site.id
+Groups: inclusive_group, atom_group
+
+Description:
+Data items in the ATOM_SITE category record details about
+the atom sites in a macromolecular crystal structure, such as
+the positional coordinates, atomic displacement parameters,
+magnetic moments and directions.
+...
+
+Items (103):
+  _atom_site.aniso_B[1][1]
+  _atom_site.aniso_B[1][1]_esd
+  ...
+```
+
+### Item details
+
+```
+$ mmcif-dict item _atom_site.label_atom_id
+Item: _atom_site.label_atom_id
+Category: atom_site
+Type: atcode
+Mandatory: yes
+
+Description:
+A component of the identifier for this atom site.
+
+This data item is a pointer to _chem_comp_atom.atom_id in the
+CHEM_COMP_ATOM category.
+```
+
+### Relations
+
+```
+$ mmcif-dict relations atom_site | head -8
+Relations for: atom_site
+
+  _atom_site.label_asym_id <- _pdbx_branch_scheme.asym_id (child: pdbx_branch_scheme)
+  _atom_site.label_comp_id <- _pdbx_branch_scheme.mon_id (child: pdbx_branch_scheme)
+  _atom_site.auth_comp_id <- _pdbx_branch_scheme.pdb_mon_id (child: pdbx_branch_scheme)
+  _atom_site.auth_seq_id <- _pdbx_branch_scheme.pdb_seq_num (child: pdbx_branch_scheme)
+  _atom_site.pdbx_PDB_ins_code <- _pdbx_branch_scheme.pdb_ins_code (child: pdbx_branch_scheme)
+  _atom_site.auth_asym_id <- _pdbx_branch_scheme.pdb_asym_id (child: pdbx_branch_scheme)
+```
+
+### Search
+
+```
+$ mmcif-dict search "electron density"
+Categories (1):
+  pdbx_dcc_map
+
+Items (31):
+  _pdbx_dcc_map.density_connectivity
+  _pdbx_dcc_rscc_mapman.correlation
+  _atom_sites_footnote.text
+  _refine.pdbx_density_correlation
+  ...
+```
+
 ## Using with gemmi
 
 You can also generate the dictionary JSON using [gemmi](https://gemmi.readthedocs.io/):
