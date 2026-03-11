@@ -58,6 +58,17 @@ mmcif-dict --json category atom_site
 mmcif-dict dict2json mmcif_pdbx.dic
 ```
 
+## Using with gemmi
+
+You can also generate the dictionary JSON using [gemmi](https://gemmi.readthedocs.io/):
+
+```bash
+gemmi convert --to=mmjson mmcif_pdbx.dic mmcif_pdbx.json
+mmcif-dict --dict mmcif_pdbx.json category
+```
+
+Both `dict2json` (built-in) and gemmi produce compatible JSON output.
+
 ## Dictionary Path Resolution
 
 The dictionary file is resolved in this order:
