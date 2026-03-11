@@ -11,6 +11,7 @@ const usage =
     \\
     \\Commands:
     \\  fetch [URL]           Download dictionary to ~/.config/mmcif-dict/
+    \\  show NAME             Auto-detect category or item and show details
     \\  category [NAME]       List all categories or show details for NAME
     \\  item ITEM_NAME        Show item details (e.g., _atom_site.label_atom_id)
     \\  relations CATEGORY    Show parent-child relationships for CATEGORY
@@ -172,7 +173,9 @@ pub fn main() !void {
 
     const cmd_args = positional.items[1..];
 
-    if (std.mem.eql(u8, command, "category")) {
+    if (std.mem.eql(u8, command, "show")) {
+        try runShow(gpa, &dictionary, cmd_args, w, ew, format);
+    } else if (std.mem.eql(u8, command, "category")) {
         try runCategory(gpa, &dictionary, cmd_args, w, ew, format);
     } else if (std.mem.eql(u8, command, "item")) {
         try runItem(gpa, &dictionary, cmd_args, w, ew, format);
@@ -188,6 +191,29 @@ pub fn main() !void {
     }
 
     try w.flush();
+}
+
+fn runShow(
+    gpa: std.mem.Allocator,
+    dictionary: *dict.Dictionary,
+    cmd_args: []const []const u8,
+    w: *std.io.Writer,
+    ew: *std.io.Writer,
+    format: output.Format,
+) !void {
+    if (cmd_args.len == 0) {
+        try ew.writeAll("Usage: mmcif-dict show NAME\n");
+        try ew.flush();
+        std.process.exit(1);
+    }
+    const name = cmd_args[0];
+    const stripped = if (name.len > 0 and name[0] == '_') name[1..] else name;
+    // If it contains a dot, treat as item; otherwise as category
+    if (std.mem.indexOfScalar(u8, stripped, '.') != null) {
+        try runItem(gpa, dictionary, cmd_args, w, ew, format);
+    } else {
+        try runCategory(gpa, dictionary, cmd_args, w, ew, format);
+    }
 }
 
 fn runCategory(
