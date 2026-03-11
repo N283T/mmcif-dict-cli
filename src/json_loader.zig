@@ -72,27 +72,36 @@ pub fn loadFromString(gpa: Allocator, content: []const u8) !dict.Dictionary {
         category_items.deinit();
     }
 
-    // Parse all save blocks
+    // Parse save blocks from PDBj format (save_ prefix at root level)
     var iter = dic_obj.iterator();
     while (iter.next()) |entry| {
         const key = entry.key_ptr.*;
         if (std.mem.startsWith(u8, key, "save__")) {
-            const item = (try parseItem(aa, entry.value_ptr.*)) orelse continue;
-            try items.put(item.name, item);
-
-            const gop = try category_items.getOrPut(item.category_id);
-            if (!gop.found_existing) {
-                gop.value_ptr.* = .empty;
-            }
-            try gop.value_ptr.append(gpa, item.name);
+            try addItem(aa, gpa, entry.value_ptr.*, &items, &category_items);
         } else if (std.mem.startsWith(u8, key, "save_")) {
-            const cat = (try parseCategory(aa, entry.value_ptr.*)) orelse continue;
-            try categories.put(cat.id, cat);
+            try addCategory(aa, entry.value_ptr.*, &categories);
         } else if (std.mem.eql(u8, key, "pdbx_item_linked_group_list")) {
-            const rels = try parseRelations(gpa, entry.value_ptr.*);
-            defer gpa.free(rels);
-            for (rels) |rel| {
-                try relations_list.append(gpa, rel);
+            try addRelations(gpa, entry.value_ptr.*, &relations_list);
+        }
+    }
+
+    // Parse Frames from gemmi mmJSON format (items start with '_', categories don't)
+    if (dic_obj.get("Frames")) |frames_val| {
+        const frames_obj = switch (frames_val) {
+            .object => |o| o,
+            else => null,
+        };
+        if (frames_obj) |frames| {
+            var frames_iter = frames.iterator();
+            while (frames_iter.next()) |entry| {
+                const key = entry.key_ptr.*;
+                if (key.len > 0 and key[0] == '_') {
+                    try addItem(aa, gpa, entry.value_ptr.*, &items, &category_items);
+                } else if (std.mem.eql(u8, key, "pdbx_item_linked_group_list")) {
+                    try addRelations(gpa, entry.value_ptr.*, &relations_list);
+                } else {
+                    try addCategory(aa, entry.value_ptr.*, &categories);
+                }
             }
         }
     }
@@ -114,6 +123,43 @@ pub fn loadFromString(gpa: Allocator, content: []const u8) !dict.Dictionary {
         .items = items,
         .relations = try relations_list.toOwnedSlice(gpa),
     };
+}
+
+fn addCategory(
+    aa: Allocator,
+    val: std.json.Value,
+    categories: *std.StringHashMap(dict.Category),
+) !void {
+    const cat = (try parseCategory(aa, val)) orelse return;
+    try categories.put(cat.id, cat);
+}
+
+fn addItem(
+    aa: Allocator,
+    gpa: Allocator,
+    val: std.json.Value,
+    items: *std.StringHashMap(dict.Item),
+    category_items: *std.StringHashMap(std.ArrayList([]const u8)),
+) !void {
+    const item = (try parseItem(aa, val)) orelse return;
+    try items.put(item.name, item);
+    const gop = try category_items.getOrPut(item.category_id);
+    if (!gop.found_existing) {
+        gop.value_ptr.* = .empty;
+    }
+    try gop.value_ptr.append(gpa, item.name);
+}
+
+fn addRelations(
+    gpa: Allocator,
+    val: std.json.Value,
+    relations_list: *std.ArrayList(dict.Relation),
+) !void {
+    const rels = try parseRelations(gpa, val);
+    defer gpa.free(rels);
+    for (rels) |rel| {
+        try relations_list.append(gpa, rel);
+    }
 }
 
 fn getFirstString(val: std.json.Value, outer_key: []const u8, inner_key: []const u8) []const u8 {
@@ -177,14 +223,26 @@ fn parseItem(allocator: Allocator, val: std.json.Value) !?dict.Item {
     const name = getFirstString(val, "item", "name");
     if (name.len == 0) return null;
 
+    // Use explicit category_id if present, otherwise infer from item name
+    // (e.g. "_atom_site.label_atom_id" → "atom_site")
+    const explicit_cat = getFirstString(val, "item", "category_id");
+    const category_id = if (explicit_cat.len > 0) explicit_cat else inferCategoryId(name);
+
     return .{
         .name = name,
-        .category_id = getFirstString(val, "item", "category_id"),
+        .category_id = category_id,
         .description = getFirstString(val, "item_description", "description"),
         .mandatory_code = getFirstString(val, "item", "mandatory_code"),
         .type_code = getFirstString(val, "item_type", "code"),
         .enum_values = try getStringArray(allocator, val, "item_enumeration", "value"),
     };
+}
+
+/// Infer category_id from item name: "_atom_site.label_atom_id" → "atom_site"
+fn inferCategoryId(name: []const u8) []const u8 {
+    const start: usize = if (name.len > 0 and name[0] == '_') 1 else 0;
+    const dot = std.mem.indexOfScalar(u8, name[start..], '.') orelse return "";
+    return name[start .. start + dot];
 }
 
 fn parseRelations(allocator: Allocator, val: std.json.Value) ![]dict.Relation {
@@ -387,4 +445,53 @@ test "loadFromFile with plain json" {
 
     const cat = d.getCategory("gz_cat").?;
     try std.testing.expectEqualStrings("gz_cat", cat.id);
+}
+
+test "loadFromString with gemmi mmJSON Frames format" {
+    const allocator = std.testing.allocator;
+
+    // gemmi mmJSON omits category_id from items — tests inferCategoryId fallback
+    const json =
+        \\{"data_test.dic":{
+        \\  "Frames":{
+        \\    "test_cat":{
+        \\      "category":{"id":["test_cat"],"description":["A test category"],"mandatory_code":["no"]},
+        \\      "category_key":{"name":["_test_cat.id"]}
+        \\    },
+        \\    "_test_cat.id":{
+        \\      "item":{"name":["_test_cat.id"],"mandatory_code":["yes"]},
+        \\      "item_description":{"description":["Primary key"]},
+        \\      "item_type":{"code":["int"]}
+        \\    },
+        \\    "_test_cat.name":{
+        \\      "item":{"name":["_test_cat.name"],"mandatory_code":["no"]},
+        \\      "item_description":{"description":["A name field"]},
+        \\      "item_type":{"code":["text"]}
+        \\    }
+        \\  }
+        \\}}
+    ;
+
+    var d = try loadFromString(allocator, json);
+    defer d.deinit();
+
+    // Category lookup — items should be attached via inferred category_id
+    const cat = d.getCategory("test_cat").?;
+    try std.testing.expectEqualStrings("test_cat", cat.id);
+    try std.testing.expectEqualStrings("A test category", cat.description);
+    try std.testing.expectEqual(@as(usize, 2), cat.items.len);
+
+    // Item lookup — category_id should be inferred from name
+    const item = d.getItem("_test_cat.name").?;
+    try std.testing.expectEqualStrings("_test_cat.name", item.name);
+    try std.testing.expectEqualStrings("test_cat", item.category_id);
+    try std.testing.expectEqualStrings("text", item.type_code);
+}
+
+test "inferCategoryId extracts category from item name" {
+    try std.testing.expectEqualStrings("atom_site", inferCategoryId("_atom_site.label_atom_id"));
+    try std.testing.expectEqualStrings("entity", inferCategoryId("_entity.id"));
+    try std.testing.expectEqualStrings("atom_site", inferCategoryId("atom_site.label"));
+    try std.testing.expectEqualStrings("", inferCategoryId("_nodot"));
+    try std.testing.expectEqualStrings("", inferCategoryId(""));
 }
