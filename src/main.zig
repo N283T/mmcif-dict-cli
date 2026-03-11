@@ -299,9 +299,13 @@ fn runDict2Json(
     };
     defer file.close();
 
-    const stat = try file.stat();
+    const stat = file.stat() catch |err| {
+        try ew.print("Error: cannot stat {s}: {}\n", .{ path, err });
+        try ew.flush();
+        return error.Dict2JsonFailed;
+    };
     const input = gpa.alloc(u8, stat.size) catch {
-        try ew.print("Error: file too large: {s}\n", .{path});
+        try ew.print("Error: out of memory reading {s}\n", .{path});
         try ew.flush();
         return error.Dict2JsonFailed;
     };
@@ -319,6 +323,11 @@ fn runDict2Json(
         return error.Dict2JsonFailed;
     };
     defer doc.deinit();
+
+    if (doc.blocks.len > 1) {
+        try ew.print("Warning: {d} data blocks found, converting only the first\n", .{doc.blocks.len});
+        try ew.flush();
+    }
 
     dict2json.convert(gpa, doc, w) catch |err| {
         try ew.print("Error converting to JSON: {}\n", .{err});

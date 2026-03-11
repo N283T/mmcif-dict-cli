@@ -11,15 +11,18 @@ pub const Pair = struct {
 pub const Loop = struct {
     tags: []const []const u8,
     values: []const []const u8,
-    width: usize,
+
+    pub fn width(self: Loop) usize {
+        return self.tags.len;
+    }
 
     pub fn rowCount(self: Loop) usize {
-        if (self.width == 0) return 0;
-        return self.values.len / self.width;
+        if (self.tags.len == 0) return 0;
+        return self.values.len / self.tags.len;
     }
 
     pub fn val(self: Loop, row: usize, col: usize) []const u8 {
-        return self.values[row * self.width + col];
+        return self.values[row * self.tags.len + col];
     }
 };
 
@@ -250,7 +253,6 @@ const Parser = struct {
         return .{
             .tags = try tags.toOwnedSlice(self.allocator),
             .values = try values.toOwnedSlice(self.allocator),
-            .width = width,
         };
     }
 
@@ -444,6 +446,63 @@ test "parse empty multi-line string" {
 
     const pair = doc.blocks[0].items[0].pair;
     try std.testing.expectEqualStrings("", pair.value);
+}
+
+test "parse double-quoted value" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\data_test
+        \\_tag1 "double quoted"
+    ;
+    var doc = try parse(allocator, input);
+    defer doc.deinit();
+
+    try std.testing.expectEqualStrings("double quoted", doc.blocks[0].items[0].pair.value);
+}
+
+test "parse multi-line string with content on opening line" {
+    const allocator = std.testing.allocator;
+    const input = "data_test\n_desc\n;  Content here\nLine 2\n;\n";
+    var doc = try parse(allocator, input);
+    defer doc.deinit();
+
+    const pair = doc.blocks[0].items[0].pair;
+    try std.testing.expectEqualStrings("  Content here\nLine 2", pair.value);
+}
+
+test "parse multiple data blocks" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\data_block1
+        \\_tag1 val1
+        \\data_block2
+        \\_tag2 val2
+    ;
+    var doc = try parse(allocator, input);
+    defer doc.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), doc.blocks.len);
+    try std.testing.expectEqualStrings("block1", doc.blocks[0].name);
+    try std.testing.expectEqualStrings("block2", doc.blocks[1].name);
+}
+
+test "parse loop with partial trailing row truncates" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\data_test
+        \\loop_
+        \\_col1
+        \\_col2
+        \\a b
+        \\c
+    ;
+    var doc = try parse(allocator, input);
+    defer doc.deinit();
+
+    const loop = doc.blocks[0].items[0].loop;
+    try std.testing.expectEqual(@as(usize, 1), loop.rowCount());
+    try std.testing.expectEqualStrings("a", loop.val(0, 0));
+    try std.testing.expectEqualStrings("b", loop.val(0, 1));
 }
 
 test "parse comments" {

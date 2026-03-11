@@ -3,14 +3,16 @@ const cif = @import("cif_parser.zig");
 const Allocator = std.mem.Allocator;
 
 /// Convert a CIF dictionary document to PDBj-compatible JSON format.
+/// Only the first data block is converted; additional blocks are ignored.
 /// Writes the output to the given writer.
 pub fn convert(allocator: Allocator, doc: cif.Document, w: *std.io.Writer) !void {
     if (doc.blocks.len == 0) return error.EmptyDocument;
 
     const block = doc.blocks[0];
 
-    try w.writeAll("{\n");
-    try w.print("  \"{s}\": {{\n", .{block.name});
+    try w.writeAll("{\n  ");
+    try writeJsonString(w, block.name);
+    try w.writeAll(": {\n");
 
     var first_outer = true;
 
@@ -55,7 +57,16 @@ pub fn convert(allocator: Allocator, doc: cif.Document, w: *std.io.Writer) !void
 /// "save_<name>": { grouped tag-value pairs and loops }
 fn writeFrame(allocator: Allocator, frame: cif.Frame, w: *std.io.Writer, indent: usize) !void {
     try writeIndent(w, indent);
-    try w.print("\"save_{s}\": {{\n", .{frame.name});
+    try w.writeAll("\"save_");
+    // Frame names are safe ASCII identifiers, but escape for correctness
+    for (frame.name) |ch| {
+        switch (ch) {
+            '"' => try w.writeAll("\\\""),
+            '\\' => try w.writeAll("\\\\"),
+            else => try w.writeByte(ch),
+        }
+    }
+    try w.writeAll("\": {\n");
 
     var first = true;
 
@@ -132,11 +143,13 @@ fn writePairGrouped(allocator: Allocator, pairs: []const cif.Pair, w: *std.io.Wr
     for (groups.items, 0..) |group, gi| {
         if (gi > 0) try w.writeAll(",\n");
         try writeIndent(w, indent);
-        try w.print("\"{s}\": {{\n", .{group.key});
+        try writeJsonKey(w, group.key);
+        try w.writeAll("{\n");
         for (group.values.items, 0..) |entry, ei| {
             if (ei > 0) try w.writeAll(",\n");
             try writeIndent(w, indent + 2);
-            try w.print("\"{s}\": [\n", .{entry.field});
+            try writeJsonKey(w, entry.field);
+            try w.writeAll("[\n");
             try writeIndent(w, indent + 4);
             try writeJsonString(w, entry.value);
             try w.writeByte('\n');
@@ -153,7 +166,7 @@ fn writePairGrouped(allocator: Allocator, pairs: []const cif.Pair, w: *std.io.Wr
 /// E.g., loop_ _cat.f1 _cat.f2 v1 v2 v3 v4 →
 ///   "cat": {"f1": ["v1", "v3"], "f2": ["v2", "v4"]}
 fn writeLoopGrouped(allocator: Allocator, loop: cif.Loop, w: *std.io.Writer, indent: usize) !void {
-    if (loop.width == 0) return;
+    if (loop.width() == 0) return;
 
     const GroupCol = struct {
         key: []const u8,
@@ -190,12 +203,14 @@ fn writeLoopGrouped(allocator: Allocator, loop: cif.Loop, w: *std.io.Writer, ind
     for (groups.items, 0..) |group, gi| {
         if (gi > 0) try w.writeAll(",\n");
         try writeIndent(w, indent);
-        try w.print("\"{s}\": {{\n", .{group.key});
+        try writeJsonKey(w, group.key);
+        try w.writeAll("{\n");
 
         for (group.cols.items, 0..) |col, ci| {
             if (ci > 0) try w.writeAll(",\n");
             try writeIndent(w, indent + 2);
-            try w.print("\"{s}\": [\n", .{col.field});
+            try writeJsonKey(w, col.field);
+            try w.writeAll("[\n");
             for (0..rows) |row| {
                 if (row > 0) try w.writeAll(",\n");
                 try writeIndent(w, indent + 4);
@@ -220,6 +235,12 @@ fn splitTag(tag: []const u8) [2][]const u8 {
         return .{ body[0..dot], body[dot + 1 ..] };
     }
     return .{ body, body };
+}
+
+/// Write a JSON key (escaped string followed by ": ").
+fn writeJsonKey(w: *std.io.Writer, s: []const u8) !void {
+    try writeJsonString(w, s);
+    try w.writeAll(": ");
 }
 
 fn writeIndent(w: *std.io.Writer, n: usize) !void {
@@ -320,6 +341,22 @@ test "convert loop to JSON" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"category_key\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"_my_cat.id\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"_my_cat.name\"") != null);
+}
+
+test "convert returns EmptyDocument for no blocks" {
+    const allocator = std.testing.allocator;
+    const input = "# just a comment\n";
+    var doc = try cif.parse(allocator, input);
+    defer doc.deinit();
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("empty.json", .{});
+    defer file.close();
+
+    var wbuf: [4096]u8 = undefined;
+    var fw = file.writer(&wbuf);
+    try std.testing.expectError(error.EmptyDocument, convert(allocator, doc, &fw.interface));
 }
 
 test "splitTag separates category and field" {
