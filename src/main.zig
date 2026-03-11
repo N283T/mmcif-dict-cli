@@ -212,8 +212,13 @@ fn runCategory(
         }.lessThan);
         try output.printCategoryList(w, names.items, format);
     } else {
-        const cat = dictionary.getCategory(cmd_args[0]) orelse {
-            try ew.print("Category not found: {s}\n", .{cmd_args[0]});
+        // Normalize category name: strip leading '_' and trailing '.xxx'
+        // e.g. "_atom_site" -> "atom_site", "_atom_site.entity_id" -> "atom_site"
+        const raw_name = cmd_args[0];
+        const stripped = if (raw_name.len > 0 and raw_name[0] == '_') raw_name[1..] else raw_name;
+        const cat_name = if (std.mem.indexOfScalar(u8, stripped, '.')) |dot| stripped[0..dot] else stripped;
+        const cat = dictionary.getCategory(cat_name) orelse {
+            try ew.print("Category not found: {s}\n", .{cat_name});
             try ew.flush();
             std.process.exit(1);
         };
