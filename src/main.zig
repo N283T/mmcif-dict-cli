@@ -1,5 +1,7 @@
 const std = @import("std");
+const cif = @import("cif_parser.zig");
 const dict = @import("dict.zig");
+const dict2json = @import("dict2json.zig");
 const fetch = @import("fetch.zig");
 const json_loader = @import("json_loader.zig");
 const output = @import("output.zig");
@@ -13,6 +15,7 @@ const usage =
     \\  item ITEM_NAME        Show item details (e.g., _atom_site.label_atom_id)
     \\  relations CATEGORY    Show parent-child relationships for CATEGORY
     \\  search QUERY          Search descriptions for QUERY
+    \\  dict2json FILE        Convert CIF dictionary to PDBj-compatible JSON
     \\
     \\Options:
     \\  --json                Output in JSON format
@@ -87,6 +90,23 @@ pub fn main() !void {
         const url = if (positional.items.len > 1) positional.items[1] else fetch.default_url;
         fetch.fetchDictionary(gpa, url, w, ew) catch |err| {
             if (err != error.FetchFailed) {
+                try ew.print("Error: {}\n", .{err});
+                try ew.flush();
+            }
+            std.process.exit(1);
+        };
+        return;
+    }
+
+    // Handle dict2json command before loading dictionary
+    if (std.mem.eql(u8, command, "dict2json")) {
+        if (positional.items.len != 2) {
+            try ew.writeAll("Usage: mmcif-dict dict2json FILE\n");
+            try ew.flush();
+            std.process.exit(1);
+        }
+        runDict2Json(gpa, positional.items[1], w, ew) catch |err| {
+            if (err != error.Dict2JsonFailed) {
                 try ew.print("Error: {}\n", .{err});
                 try ew.flush();
             }
@@ -266,8 +286,53 @@ fn runSearch(
     try output.printSearchResults(w, cmd_args[0], results, format);
 }
 
+fn runDict2Json(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    w: *std.io.Writer,
+    ew: *std.io.Writer,
+) !void {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        try ew.print("Error: cannot open {s}: {}\n", .{ path, err });
+        try ew.flush();
+        return error.Dict2JsonFailed;
+    };
+    defer file.close();
+
+    const stat = try file.stat();
+    const input = gpa.alloc(u8, stat.size) catch {
+        try ew.print("Error: file too large: {s}\n", .{path});
+        try ew.flush();
+        return error.Dict2JsonFailed;
+    };
+    defer gpa.free(input);
+
+    const n = file.readAll(input) catch |err| {
+        try ew.print("Error reading {s}: {}\n", .{ path, err });
+        try ew.flush();
+        return error.Dict2JsonFailed;
+    };
+
+    var doc = cif.parse(gpa, input[0..n]) catch |err| {
+        try ew.print("Error parsing CIF {s}: {}\n", .{ path, err });
+        try ew.flush();
+        return error.Dict2JsonFailed;
+    };
+    defer doc.deinit();
+
+    dict2json.convert(gpa, doc, w) catch |err| {
+        try ew.print("Error converting to JSON: {}\n", .{err});
+        try ew.flush();
+        return error.Dict2JsonFailed;
+    };
+
+    try w.flush();
+}
+
 test {
+    _ = @import("cif_parser.zig");
     _ = @import("dict.zig");
+    _ = @import("dict2json.zig");
     _ = @import("fetch.zig");
     _ = @import("json_loader.zig");
     _ = @import("output.zig");
