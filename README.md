@@ -4,32 +4,39 @@ CLI tool for querying mmCIF PDBx dictionary definitions.
 
 Uses PDBj's JSON representation of the mmCIF dictionary for fast lookups of categories, items, and their relationships.
 
-## Setup
+## Installation
 
-1. Build:
+### Pre-built binary (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/N283T/mmcif-dict-cli/main/install.sh | sh
+```
+
+Installs to `~/.local/bin/` by default. Override with `INSTALL_DIR`:
+
+```bash
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/N283T/mmcif-dict-cli/main/install.sh | sh
+```
+
+Supported platforms: Linux (x86_64, aarch64), macOS (aarch64).
+
+### Build from source
+
+Requires [Zig](https://ziglang.org/) 0.15.2+.
 
 ```bash
 zig build -Doptimize=ReleaseFast
 ```
 
-2. Download the dictionary:
-
-```bash
-mmcif-dict fetch
-```
-
-This downloads from PDBj and saves as `~/.config/mmcif-dict/mmcif_pdbx.json.gz` (~540 KB).
-Decompression is handled natively at load time.
-
 The binary is at `zig-out/bin/mmcif-dict`.
 
-## Usage
+## Quick Start
 
 ```bash
-# Download/update dictionary
+# Download the dictionary (~540 KB)
 mmcif-dict fetch
 
-# List all categories (604 categories)
+# List all 604 categories
 mmcif-dict category
 
 # Show category details
@@ -46,6 +53,9 @@ mmcif-dict search "electron density"
 
 # JSON output (for AI tools / scripts)
 mmcif-dict --json category atom_site
+
+# Convert CIF dictionary to PDBj-compatible JSON
+mmcif-dict dict2json mmcif_pdbx.dic
 ```
 
 ## Dictionary Path Resolution
