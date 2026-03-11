@@ -97,6 +97,8 @@ pub fn loadFromString(gpa: Allocator, content: []const u8) !dict.Dictionary {
                 const key = entry.key_ptr.*;
                 if (key.len > 0 and key[0] == '_') {
                     try addItem(aa, gpa, entry.value_ptr.*, &items, &category_items);
+                } else if (std.mem.eql(u8, key, "pdbx_item_linked_group_list")) {
+                    try addRelations(gpa, entry.value_ptr.*, &relations_list);
                 } else {
                     try addCategory(aa, entry.value_ptr.*, &categories);
                 }
@@ -448,6 +450,7 @@ test "loadFromFile with plain json" {
 test "loadFromString with gemmi mmJSON Frames format" {
     const allocator = std.testing.allocator;
 
+    // gemmi mmJSON omits category_id from items — tests inferCategoryId fallback
     const json =
         \\{"data_test.dic":{
         \\  "Frames":{
@@ -456,12 +459,12 @@ test "loadFromString with gemmi mmJSON Frames format" {
         \\      "category_key":{"name":["_test_cat.id"]}
         \\    },
         \\    "_test_cat.id":{
-        \\      "item":{"name":["_test_cat.id"],"category_id":["test_cat"],"mandatory_code":["yes"]},
+        \\      "item":{"name":["_test_cat.id"],"mandatory_code":["yes"]},
         \\      "item_description":{"description":["Primary key"]},
         \\      "item_type":{"code":["int"]}
         \\    },
         \\    "_test_cat.name":{
-        \\      "item":{"name":["_test_cat.name"],"category_id":["test_cat"],"mandatory_code":["no"]},
+        \\      "item":{"name":["_test_cat.name"],"mandatory_code":["no"]},
         \\      "item_description":{"description":["A name field"]},
         \\      "item_type":{"code":["text"]}
         \\    }
@@ -472,14 +475,23 @@ test "loadFromString with gemmi mmJSON Frames format" {
     var d = try loadFromString(allocator, json);
     defer d.deinit();
 
-    // Category lookup
+    // Category lookup — items should be attached via inferred category_id
     const cat = d.getCategory("test_cat").?;
     try std.testing.expectEqualStrings("test_cat", cat.id);
     try std.testing.expectEqualStrings("A test category", cat.description);
     try std.testing.expectEqual(@as(usize, 2), cat.items.len);
 
-    // Item lookup
+    // Item lookup — category_id should be inferred from name
     const item = d.getItem("_test_cat.name").?;
     try std.testing.expectEqualStrings("_test_cat.name", item.name);
+    try std.testing.expectEqualStrings("test_cat", item.category_id);
     try std.testing.expectEqualStrings("text", item.type_code);
+}
+
+test "inferCategoryId extracts category from item name" {
+    try std.testing.expectEqualStrings("atom_site", inferCategoryId("_atom_site.label_atom_id"));
+    try std.testing.expectEqualStrings("entity", inferCategoryId("_entity.id"));
+    try std.testing.expectEqualStrings("atom_site", inferCategoryId("atom_site.label"));
+    try std.testing.expectEqualStrings("", inferCategoryId("_nodot"));
+    try std.testing.expectEqualStrings("", inferCategoryId(""));
 }
