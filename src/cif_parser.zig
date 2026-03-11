@@ -48,34 +48,35 @@ pub const Document = struct {
     blocks: []const Block,
 
     pub fn deinit(self: *Document) void {
-        for (self.blocks) |block| {
-            for (block.items) |item| {
-                switch (item) {
-                    .loop => |loop| {
-                        self.allocator.free(loop.tags);
-                        self.allocator.free(loop.values);
-                    },
-                    .pair => {},
-                }
-            }
-            self.allocator.free(block.items);
-            for (block.frames) |frame| {
-                for (frame.items) |item| {
-                    switch (item) {
-                        .loop => |loop| {
-                            self.allocator.free(loop.tags);
-                            self.allocator.free(loop.values);
-                        },
-                        .pair => {},
-                    }
-                }
-                self.allocator.free(frame.items);
-            }
-            self.allocator.free(block.frames);
-        }
+        freeBlocks(self.allocator, self.blocks);
         self.allocator.free(self.blocks);
     }
 };
+
+fn freeItems(allocator: Allocator, items: []const Item) void {
+    for (items) |item| {
+        switch (item) {
+            .loop => |loop| {
+                allocator.free(loop.tags);
+                allocator.free(loop.values);
+            },
+            .pair => {},
+        }
+    }
+    allocator.free(items);
+}
+
+fn freeFrames(allocator: Allocator, frames: []const Frame) void {
+    for (frames) |frame| freeItems(allocator, frame.items);
+    allocator.free(frames);
+}
+
+fn freeBlocks(allocator: Allocator, blocks: []const Block) void {
+    for (blocks) |block| {
+        freeItems(allocator, block.items);
+        freeFrames(allocator, block.frames);
+    }
+}
 
 /// Parse CIF text into a Document.
 pub fn parse(allocator: Allocator, input: []const u8) !Document {
@@ -94,7 +95,10 @@ const Parser = struct {
 
     fn parseDocument(self: *Parser) !Document {
         var blocks: std.ArrayList(Block) = .empty;
-        errdefer blocks.deinit(self.allocator);
+        errdefer {
+            freeBlocks(self.allocator, blocks.items);
+            blocks.deinit(self.allocator);
+        }
 
         self.skipWhitespaceAndComments();
         while (self.pos < self.input.len) {
@@ -118,9 +122,21 @@ const Parser = struct {
         const name = self.readNonWhitespace();
 
         var items: std.ArrayList(Item) = .empty;
-        errdefer items.deinit(self.allocator);
+        errdefer {
+            for (items.items) |item| switch (item) {
+                .loop => |loop| {
+                    self.allocator.free(loop.tags);
+                    self.allocator.free(loop.values);
+                },
+                .pair => {},
+            };
+            items.deinit(self.allocator);
+        }
         var frames: std.ArrayList(Frame) = .empty;
-        errdefer frames.deinit(self.allocator);
+        errdefer {
+            for (frames.items) |frame| freeItems(self.allocator, frame.items);
+            frames.deinit(self.allocator);
+        }
 
         self.skipWhitespaceAndComments();
         while (self.pos < self.input.len) {
@@ -153,7 +169,16 @@ const Parser = struct {
         const name = self.readNonWhitespace();
 
         var items: std.ArrayList(Item) = .empty;
-        errdefer items.deinit(self.allocator);
+        errdefer {
+            for (items.items) |item| switch (item) {
+                .loop => |loop| {
+                    self.allocator.free(loop.tags);
+                    self.allocator.free(loop.values);
+                },
+                .pair => {},
+            };
+            items.deinit(self.allocator);
+        }
 
         self.skipWhitespaceAndComments();
         while (self.pos < self.input.len) {
@@ -215,6 +240,11 @@ const Parser = struct {
 
             try values.append(self.allocator, self.readValue());
             self.skipWhitespaceAndComments();
+        }
+
+        // Truncate partial trailing row (malformed CIF)
+        if (width > 0 and values.items.len % width != 0) {
+            values.shrinkRetainingCapacity((values.items.len / width) * width);
         }
 
         return .{
