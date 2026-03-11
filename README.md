@@ -1,5 +1,11 @@
 # mmcif-dict-cli
 
+[![CI](https://github.com/N283T/mmcif-dict-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/N283T/mmcif-dict-cli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/N283T/mmcif-dict-cli)](https://github.com/N283T/mmcif-dict-cli/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Zig](https://img.shields.io/badge/zig-0.15.2-f7a41d.svg)](https://ziglang.org/)
+[![Nix](https://img.shields.io/badge/nix-flake-5277C3.svg)](https://nixos.org/)
+
 CLI tool for querying mmCIF PDBx dictionary definitions.
 
 Uses PDBj's JSON representation of the mmCIF dictionary for fast lookups of categories, items, and their relationships.
