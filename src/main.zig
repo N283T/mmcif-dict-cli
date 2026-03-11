@@ -212,8 +212,15 @@ fn runCategory(
         }.lessThan);
         try output.printCategoryList(w, names.items, format);
     } else {
-        const cat = dictionary.getCategory(cmd_args[0]) orelse {
-            try ew.print("Category not found: {s}\n", .{cmd_args[0]});
+        const raw_name = cmd_args[0];
+        const cat_name = normalizeCategoryName(raw_name);
+        if (cat_name.len == 0) {
+            try ew.print("Invalid category name: {s}\n", .{raw_name});
+            try ew.flush();
+            std.process.exit(1);
+        }
+        const cat = dictionary.getCategory(cat_name) orelse {
+            try ew.print("Category not found: {s}\n", .{raw_name});
             try ew.flush();
             std.process.exit(1);
         };
@@ -262,9 +269,16 @@ fn runRelations(
         try ew.flush();
         std.process.exit(1);
     }
-    const rels = try dictionary.getRelationsForCategory(gpa, cmd_args[0]);
+    const raw_name = cmd_args[0];
+    const cat_name = normalizeCategoryName(raw_name);
+    if (cat_name.len == 0) {
+        try ew.print("Invalid category name: {s}\n", .{raw_name});
+        try ew.flush();
+        std.process.exit(1);
+    }
+    const rels = try dictionary.getRelationsForCategory(gpa, cat_name);
     defer gpa.free(rels);
-    try output.printRelations(w, cmd_args[0], rels, format);
+    try output.printRelations(w, cat_name, rels, format);
 }
 
 fn runSearch(
@@ -336,6 +350,13 @@ fn runDict2Json(
     };
 
     try w.flush();
+}
+
+/// Normalize category name: strip leading '_' and trailing '.xxx'
+/// e.g. "_atom_site" -> "atom_site", "_atom_site.entity_id" -> "atom_site"
+fn normalizeCategoryName(raw: []const u8) []const u8 {
+    const stripped = if (raw.len > 0 and raw[0] == '_') raw[1..] else raw;
+    return if (std.mem.indexOfScalar(u8, stripped, '.')) |dot| stripped[0..dot] else stripped;
 }
 
 test {
