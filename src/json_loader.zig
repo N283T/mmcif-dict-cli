@@ -47,8 +47,10 @@ pub fn loadFromString(gpa: Allocator, content: []const u8) !dict.Dictionary {
         .object => |o| o,
         else => return error.InvalidInput,
     };
-    const dic_val = root_obj.get("data_mmcif_pdbx.dic") orelse return error.InvalidInput;
-    const dic_obj = switch (dic_val) {
+    // Use the first key in the root object (e.g. "data_mmcif_pdbx.dic", "data_mmcif_ihm_ext.dic")
+    var root_iter = root_obj.iterator();
+    const first_entry = root_iter.next() orelse return error.InvalidInput;
+    const dic_obj = switch (first_entry.value_ptr.*) {
         .object => |o| o,
         else => return error.InvalidInput,
     };
@@ -326,12 +328,33 @@ test "loadFromString with invalid JSON" {
     } else |_| {}
 }
 
-test "loadFromString with missing root key" {
+test "loadFromString with empty root object" {
     const allocator = std.testing.allocator;
-    const json = \\{"wrong_key":{}}
+    const json = \\{}
     ;
     const result = loadFromString(allocator, json);
     try std.testing.expectError(error.InvalidInput, result);
+}
+
+test "loadFromString accepts any root key" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"data_other.dic":{
+        \\  "save_my_cat":{
+        \\    "category":{"id":["my_cat"],"description":["Test"],"mandatory_code":["no"]},
+        \\    "category_key":{"name":["_my_cat.id"]}
+        \\  },
+        \\  "save__my_cat.id":{
+        \\    "item":{"name":["_my_cat.id"],"category_id":["my_cat"],"mandatory_code":["yes"]},
+        \\    "item_description":{"description":["Primary key"]},
+        \\    "item_type":{"code":["int"]}
+        \\  }
+        \\}}
+    ;
+    var d = try loadFromString(allocator, json);
+    defer d.deinit();
+    const cat = d.getCategory("my_cat").?;
+    try std.testing.expectEqualStrings("my_cat", cat.id);
 }
 
 test "loadFromFile with gzip" {
