@@ -34,6 +34,7 @@ pub fn configDictExists(allocator: Allocator) bool {
 
 /// Fetch the dictionary from PDBj and save as .gz to ~/.config/mmcif-dict/.
 /// Uses std.http.Client — no external dependencies required.
+/// The .gz is decompressed at load time (see json_loader.zig).
 pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writer) !void {
     const dest_path = try getConfigDictPath(allocator);
     defer allocator.free(dest_path);
@@ -58,45 +59,53 @@ pub fn fetchDictionary(allocator: Allocator, w: *std.io.Writer, ew: *std.io.Writ
     try w.print("Destination: {s}\n", .{dest_path});
     try w.flush();
 
-    // Download with std.http.Client
+    // Stream response body directly to temp file to avoid buffering in memory
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();
 
-    const tmp_file = std.fs.cwd().createFile(tmp_path, .{}) catch |err| {
-        try ew.print("Error creating temp file: {}\n", .{err});
-        try ew.flush();
-        return error.FetchFailed;
-    };
-    tmp_created = true;
+    {
+        const tmp_file = std.fs.cwd().createFile(tmp_path, .{}) catch |err| {
+            try ew.print("Error creating temp file {s}: {}\n", .{ tmp_path, err });
+            try ew.flush();
+            return error.FetchFailed;
+        };
+        defer tmp_file.close();
+        tmp_created = true;
 
-    var write_buf: [65536]u8 = undefined;
-    var file_writer = tmp_file.writer(&write_buf);
+        var write_buf: [65536]u8 = undefined;
+        var file_writer = tmp_file.writer(&write_buf);
 
-    const result = client.fetch(.{
-        .location = .{ .url = dict_url },
-        .response_writer = &file_writer.interface,
-    }) catch |err| {
-        tmp_file.close();
-        try ew.print("Download failed: {}. Check your network connection.\n", .{err});
-        try ew.flush();
-        return error.FetchFailed;
-    };
+        // fetch() streams the response body regardless of HTTP status,
+        // so we check status before flushing to avoid persisting error pages.
+        const result = client.fetch(.{
+            .location = .{ .url = dict_url },
+            .response_writer = &file_writer.interface,
+        }) catch |err| {
+            try ew.print("Download failed: {}. Check your network connection.\n", .{err});
+            try ew.flush();
+            return error.FetchFailed;
+        };
 
-    file_writer.interface.flush() catch |err| {
-        tmp_file.close();
-        try ew.print("Error writing downloaded data: {}\n", .{err});
-        try ew.flush();
-        return error.FetchFailed;
-    };
-    tmp_file.close();
+        if (result.status != .ok) {
+            const code = @intFromEnum(result.status);
+            try ew.print("Download failed (HTTP {d}).\n", .{code});
+            if (code >= 500) {
+                try ew.writeAll("The server may be temporarily unavailable. Please try again later.\n");
+            } else if (result.status == .not_found) {
+                try ew.writeAll("The dictionary URL may have changed. Check for updates.\n");
+            }
+            try ew.flush();
+            return error.FetchFailed;
+        }
 
-    if (result.status != .ok) {
-        try ew.print("Download failed (HTTP {d}).\n", .{@intFromEnum(result.status)});
-        try ew.flush();
-        return error.FetchFailed;
+        file_writer.interface.flush() catch |err| {
+            try ew.print("Error writing downloaded data: {}\n", .{err});
+            try ew.flush();
+            return error.FetchFailed;
+        };
     }
 
-    // Validate: check size and gzip magic bytes
+    // Guard against truncated downloads or HTML error pages served as 200 OK
     const verify_file = std.fs.cwd().openFile(tmp_path, .{}) catch |err| {
         try ew.print("Error: cannot open downloaded file: {}\n", .{err});
         try ew.flush();
