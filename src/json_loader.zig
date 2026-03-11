@@ -221,14 +221,26 @@ fn parseItem(allocator: Allocator, val: std.json.Value) !?dict.Item {
     const name = getFirstString(val, "item", "name");
     if (name.len == 0) return null;
 
+    // Use explicit category_id if present, otherwise infer from item name
+    // (e.g. "_atom_site.label_atom_id" → "atom_site")
+    const explicit_cat = getFirstString(val, "item", "category_id");
+    const category_id = if (explicit_cat.len > 0) explicit_cat else inferCategoryId(name);
+
     return .{
         .name = name,
-        .category_id = getFirstString(val, "item", "category_id"),
+        .category_id = category_id,
         .description = getFirstString(val, "item_description", "description"),
         .mandatory_code = getFirstString(val, "item", "mandatory_code"),
         .type_code = getFirstString(val, "item_type", "code"),
         .enum_values = try getStringArray(allocator, val, "item_enumeration", "value"),
     };
+}
+
+/// Infer category_id from item name: "_atom_site.label_atom_id" → "atom_site"
+fn inferCategoryId(name: []const u8) []const u8 {
+    const start: usize = if (name.len > 0 and name[0] == '_') 1 else 0;
+    const dot = std.mem.indexOfScalar(u8, name[start..], '.') orelse return "";
+    return name[start .. start + dot];
 }
 
 fn parseRelations(allocator: Allocator, val: std.json.Value) ![]dict.Relation {
