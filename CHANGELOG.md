@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2025-03-11
+
+### Added
+
+- `show` command: auto-detect category or item based on dot notation
+  - `show _atom_site` → category details
+  - `show _atom_site.label_entity_id` → item details
+
+### Changed
+
+- `category` command now accepts leading `_` and item-style dot notation
+  - `_atom_site` and `_atom_site.entity_id` both resolve to `atom_site`
+- `relations` command now accepts leading `_` in category name
+
 ## [0.1.0] - 2025-03-11
 
 ### Added

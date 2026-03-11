@@ -70,6 +70,10 @@ mmcif-dict fetch
 # List all 604 categories
 mmcif-dict category
 
+# Auto-detect and show category or item
+mmcif-dict show _atom_site
+mmcif-dict show _atom_site.label_atom_id
+
 # Show category details
 mmcif-dict category atom_site
 
