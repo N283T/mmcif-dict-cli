@@ -3,8 +3,6 @@ const fmt = @import("mdict_format.zig");
 const dic = @import("dic_loader.zig");
 const Allocator = std.mem.Allocator;
 
-pub const WriteError = error{ OutOfMemory, WriteFailed };
-
 const StringInterner = struct {
     aa: Allocator,
     map: std.StringHashMap(fmt.StrRef),
@@ -75,17 +73,23 @@ const ArrayInterner = struct {
 };
 
 fn lessCategoryById(_: void, a: dic.Category, b: dic.Category) bool {
-    return std.mem.order(u8, a.id, b.id) == .lt;
+    const c = std.mem.order(u8, a.id, b.id);
+    if (c != .eq) return c == .lt;
+    return std.mem.order(u8, a.description, b.description) == .lt;
 }
 
 fn lessItemByName(_: void, a: dic.Item, b: dic.Item) bool {
-    return std.mem.order(u8, a.name, b.name) == .lt;
+    const c = std.mem.order(u8, a.name, b.name);
+    if (c != .eq) return c == .lt;
+    return std.mem.order(u8, a.category_id, b.category_id) == .lt;
 }
 
 fn lessRelationByChildCat(_: void, a: dic.Relation, b: dic.Relation) bool {
     const c = std.mem.order(u8, a.child_category_id, b.child_category_id);
     if (c != .eq) return c == .lt;
-    return std.mem.order(u8, a.child_name, b.child_name) == .lt;
+    const n = std.mem.order(u8, a.child_name, b.child_name);
+    if (n != .eq) return n == .lt;
+    return std.mem.order(u8, a.parent_name, b.parent_name) == .lt;
 }
 
 /// Serialise a BuildDict to bytes. Caller owns the returned slice.
