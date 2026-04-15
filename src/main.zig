@@ -387,6 +387,7 @@ fn normalizeCategoryName(raw: []const u8) []const u8 {
 
 test {
     _ = @import("cif_parser.zig");
+    _ = @import("dic_loader.zig");
     _ = @import("dict.zig");
     _ = @import("dict2json.zig");
     _ = @import("fetch.zig");
