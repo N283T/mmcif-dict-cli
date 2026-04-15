@@ -391,5 +391,6 @@ test {
     _ = @import("dict2json.zig");
     _ = @import("fetch.zig");
     _ = @import("json_loader.zig");
+    _ = @import("mdict_format.zig");
     _ = @import("output.zig");
 }
