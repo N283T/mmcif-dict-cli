@@ -393,6 +393,7 @@ test {
     _ = @import("fetch.zig");
     _ = @import("json_loader.zig");
     _ = @import("mdict_format.zig");
+    _ = @import("mdict_reader.zig");
     _ = @import("mdict_writer.zig");
     _ = @import("output.zig");
 }
