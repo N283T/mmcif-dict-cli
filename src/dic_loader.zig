@@ -83,7 +83,6 @@ pub fn loadFromDicBytes(gpa: Allocator, content: []const u8) !BuildDict {
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 try gop.value_ptr.append(aa, it.name);
             },
-            .unknown => {},
         }
     }
 
@@ -111,7 +110,6 @@ pub fn loadFromDicBytes(gpa: Allocator, content: []const u8) !BuildDict {
 const Classified = union(enum) {
     category: Category,
     item: Item,
-    unknown,
 };
 
 fn classifyFrame(aa: Allocator, frame: cif.Frame) !Classified {
@@ -265,4 +263,61 @@ test "loadFromDicBytes parses minimal dictionary" {
 
     try std.testing.expectEqual(@as(usize, 1), bd.relations.len);
     try std.testing.expectEqualStrings("parent_cat", bd.relations[0].parent_category_id);
+}
+
+test "loadFromDicBytes handles multiple categories and items" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\data_multi_dic
+        \\save_alpha_cat
+        \\    _category.id            alpha_cat
+        \\    _category.description   'Alpha category'
+        \\    _category.mandatory_code no
+        \\save_
+        \\save_beta_cat
+        \\    _category.id            beta_cat
+        \\    _category.description   'Beta category'
+        \\    _category.mandatory_code yes
+        \\save_
+        \\save__alpha_cat.id
+        \\    _item.name               '_alpha_cat.id'
+        \\    _item.category_id        alpha_cat
+        \\    _item.mandatory_code     yes
+        \\    _item_type.code          int
+        \\save_
+        \\save__alpha_cat.name
+        \\    _item.name               '_alpha_cat.name'
+        \\    _item.category_id        alpha_cat
+        \\    _item.mandatory_code     no
+        \\    _item_type.code          text
+        \\save_
+        \\save__beta_cat.id
+        \\    _item.name               '_beta_cat.id'
+        \\    _item.category_id        beta_cat
+        \\    _item.mandatory_code     yes
+        \\    _item_type.code          int
+        \\save_
+    ;
+
+    var bd = try loadFromDicBytes(allocator, input);
+    defer bd.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), bd.categories.len);
+    try std.testing.expectEqual(@as(usize, 3), bd.items.len);
+
+    // alpha_cat should have 2 items attached, beta_cat 1
+    var alpha_items: usize = 0;
+    var beta_items: usize = 0;
+    for (bd.categories) |c| {
+        if (std.mem.eql(u8, c.id, "alpha_cat")) alpha_items = c.items.len;
+        if (std.mem.eql(u8, c.id, "beta_cat")) beta_items = c.items.len;
+    }
+    try std.testing.expectEqual(@as(usize, 2), alpha_items);
+    try std.testing.expectEqual(@as(usize, 1), beta_items);
+}
+
+test "loadFromDicBytes rejects empty input" {
+    const allocator = std.testing.allocator;
+    const result = loadFromDicBytes(allocator, "");
+    try std.testing.expectError(error.EmptyDictionary, result);
 }
