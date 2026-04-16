@@ -1,8 +1,14 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    // Expose the package version from build.zig.zon as a build option so the
+    // CLI can print it for --version without hardcoding the string twice.
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", zon.version);
 
     const exe = b.addExecutable(.{
         .name = "mmcif-dict",
@@ -12,6 +18,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addOptions("build_options", options);
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

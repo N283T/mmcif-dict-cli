@@ -199,5 +199,38 @@ def test_invalid_name_rejected() -> None:
     assert "invalid" in r.stderr.lower()
 
 
+def _expected_version() -> str:
+    """Parse the version string out of build.zig.zon without importing Zig."""
+    text = PROJECT_ROOT.joinpath("build.zig.zon").read_text()
+    for line in text.splitlines():
+        stripped = line.strip()
+        # Match `.version = "X"` exactly; reject siblings like `.version_foo`.
+        if stripped.startswith(".version") and "=" in stripped and '"' in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key == ".version":
+                return stripped.split('"', 2)[1]
+    raise AssertionError("no .version line in build.zig.zon")
+
+
+def test_version_long_flag() -> None:
+    r = _run("--version")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == f"mmcif-dict {_expected_version()}"
+
+
+def test_version_short_flag() -> None:
+    r = _run("-V")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == f"mmcif-dict {_expected_version()}"
+
+
+def test_help_mentions_version_flag() -> None:
+    r = _run("--help")
+    assert r.returncode == 0, r.stderr
+    assert "--version" in r.stdout
+    # Guard against someone quietly dropping the short form from usage text.
+    assert "-V" in r.stdout
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

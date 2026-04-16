@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `--version` / `-V` flag prints the CLI version (e.g. `mmcif-dict 0.3.0`) and
+  exits; the version is sourced from `build.zig.zon` via a build option so it
+  stays in sync with the release automatically (#36)
+
 ## [0.3.0] - 2026-04-16
 
 ### Removed
