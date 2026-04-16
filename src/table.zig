@@ -269,3 +269,104 @@ test "render boxed truncates cells that exceed terminal width" {
     const n = try file.readAll(&out);
     try std.testing.expect(std.mem.indexOf(u8, out[0..n], "…") != null);
 }
+
+/// Render a single-column list in one of two shapes:
+///   - .boxed: pack items into a column grid that fits terminal_width
+///   - .tsv:   one item per line with a 2-space indent (legacy format)
+pub fn renderGrid(
+    gpa: std.mem.Allocator,
+    w: *std.io.Writer,
+    items: []const []const u8,
+    opts: Options,
+) !void {
+    switch (opts.style) {
+        .tsv => {
+            for (items) |it| {
+                try w.print("  {s}\n", .{it});
+            }
+        },
+        .boxed => {
+            if (items.len == 0) return;
+
+            // Longest item drives column width. Add 2 for inter-column gap.
+            var max_len: usize = 0;
+            for (items) |it| {
+                if (it.len > max_len) max_len = it.len;
+            }
+            const col_w = max_len + 2;
+            const usable = if (opts.terminal_width >= 2) opts.terminal_width - 2 else 1;
+            var ncols: usize = if (col_w == 0) 1 else usable / col_w;
+            if (ncols == 0) ncols = 1;
+            _ = gpa; // not needed in this simple packer
+
+            // Row-major layout: item k -> (k / ncols, k % ncols).
+            var idx: usize = 0;
+            while (idx < items.len) {
+                try w.writeAll("  "); // 2-space outer indent
+                var col: usize = 0;
+                while (col < ncols and idx < items.len) : ({ col += 1; idx += 1; }) {
+                    const it = items[idx];
+                    try w.writeAll(it);
+                    // Pad to column width unless this is the last item on the row.
+                    const is_last_on_row = (col + 1 == ncols) or (idx + 1 == items.len);
+                    if (!is_last_on_row) {
+                        var pad: usize = col_w - it.len;
+                        while (pad > 0) : (pad -= 1) try w.writeByte(' ');
+                    }
+                }
+                try w.writeByte('\n');
+            }
+        },
+    }
+}
+
+test "renderGrid tsv emits one item per line with 2-space indent" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("grid_tsv.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [1024]u8 = undefined;
+    var fw = file.writer(&buf);
+    const w = &fw.interface;
+
+    const items = [_][]const u8{ "_x.a", "_x.b", "_x.c" };
+    try renderGrid(allocator, w, &items, .{ .style = .tsv });
+    try w.flush();
+
+    try file.seekTo(0);
+    var out: [256]u8 = undefined;
+    const n = try file.readAll(&out);
+    try std.testing.expectEqualStrings("  _x.a\n  _x.b\n  _x.c\n", out[0..n]);
+}
+
+test "renderGrid boxed packs multiple items per line" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("grid_boxed.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var fw = file.writer(&buf);
+    const w = &fw.interface;
+
+    // 6 short items, terminal width 30 -> should fit 3 or more per row.
+    const items = [_][]const u8{ "aa", "bb", "cc", "dd", "ee", "ff" };
+    try renderGrid(allocator, w, &items, .{ .style = .boxed, .terminal_width = 30 });
+    try w.flush();
+
+    try file.seekTo(0);
+    var out: [512]u8 = undefined;
+    const n = try file.readAll(&out);
+    const result = out[0..n];
+    for (items) |it| {
+        try std.testing.expect(std.mem.indexOf(u8, result, it) != null);
+    }
+    var lines: usize = 0;
+    for (result) |c| if (c == '\n') {
+        lines += 1;
+    };
+    try std.testing.expect(lines < items.len);
+}
