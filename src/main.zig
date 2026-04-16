@@ -5,11 +5,16 @@ const fetch = @import("fetch.zig");
 const mdict_writer = @import("mdict_writer.zig");
 const output = @import("output.zig");
 
+/// Default PDBx dictionary embedded at build time by build.zig's two-stage
+/// compile. Serves as the fallback when no cache is available so that a
+/// freshly-installed binary works offline without `fetch`.
+const embedded_pdbx = @embedFile("embedded_pdbx");
+
 const usage =
     \\Usage: mmcif-dict <command> [options] [arguments]
     \\
     \\Commands:
-    \\  fetch [URL]           Download dictionary to ~/.config/mmcif-dict/
+    \\  fetch [--url URL] [--name NAME]  Download dictionary and compile to cache
     \\  show NAME             Auto-detect category or item and show details
     \\  category [NAME]       List all categories or show details for NAME
     \\  item ITEM_NAME        Show item details (e.g., _atom_site.label_atom_id)
@@ -20,10 +25,11 @@ const usage =
     \\Options:
     \\  --json                Output in JSON format
     \\  --dict PATH           Path to dictionary (.mdict)
+    \\  --name NAME           Select named cache (default: pdbx)
     \\  --help                Show this help
     \\
     \\Environment:
-    \\  MMCIF_DICT_PATH       Default path to dictionary file
+    \\  MMCIF_DICT_PATH       Default path to dictionary file (.mdict)
     \\
 ;
 
@@ -46,6 +52,7 @@ pub fn main() !void {
 
     var format: output.Format = .text;
     var dict_path: ?[]const u8 = null;
+    var dict_name: ?[]const u8 = null;
     var positional: std.ArrayList([]const u8) = .empty;
     defer positional.deinit(gpa);
 
@@ -67,7 +74,29 @@ pub fn main() !void {
             }
             dict_path = args[i];
         } else if (std.mem.startsWith(u8, arg, "--dict=")) {
-            dict_path = arg[7..];
+            const v = arg[7..];
+            if (v.len == 0) {
+                try ew.writeAll("Error: --dict= requires a non-empty path\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            dict_path = v;
+        } else if (std.mem.eql(u8, arg, "--name")) {
+            i += 1;
+            if (i >= args.len) {
+                try ew.writeAll("Error: --name requires an argument\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            dict_name = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--name=")) {
+            const v = arg[7..];
+            if (v.len == 0) {
+                try ew.writeAll("Error: --name= requires a non-empty value\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            dict_name = v;
         } else {
             try positional.append(gpa, arg);
         }
@@ -82,24 +111,27 @@ pub fn main() !void {
     // Handle fetch command before loading dictionary
     const command = positional.items[0];
     if (std.mem.eql(u8, command, "fetch")) {
-        if (positional.items.len > 2) {
-            try ew.writeAll("Usage: mmcif-dict fetch [URL]\n");
+        if (dict_path != null) {
+            try ew.writeAll("Error: --dict is a read-only flag and cannot be combined with 'fetch'.\n");
             try ew.flush();
             std.process.exit(1);
         }
-        const url = if (positional.items.len > 1) positional.items[1] else fetch.default_url;
-        fetch.fetchDictionary(gpa, url, w, ew) catch |err| {
-            if (err != error.FetchFailed) {
-                try ew.print("Error: {}\n", .{err});
-                try ew.flush();
-            }
-            std.process.exit(1);
-        };
+        try runFetch(gpa, positional.items[1..], dict_name, w, ew);
         return;
     }
 
     // Handle compile command before loading dictionary
     if (std.mem.eql(u8, command, "compile")) {
+        if (dict_path != null) {
+            try ew.writeAll("Error: --dict is for loading a dictionary and cannot be combined with 'compile'.\n");
+            try ew.flush();
+            std.process.exit(1);
+        }
+        if (dict_name != null) {
+            try ew.writeAll("Error: --name applies to cache resolution and cannot be combined with 'compile'.\n");
+            try ew.flush();
+            std.process.exit(1);
+        }
         runCompile(gpa, positional.items[1..], w, ew) catch |err| {
             if (err != error.CompileFailed) {
                 try ew.print("Error: {}\n", .{err});
@@ -110,60 +142,78 @@ pub fn main() !void {
         return;
     }
 
-    // Resolve dictionary path: --dict > $MMCIF_DICT_PATH > ~/.config/mmcif-dict/ > exe_dir/../data/
-    var path_owned = false;
-    const path = dict_path orelse blk: {
-        const env_path = std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH") catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => {
-                // Try ~/.config/mmcif-dict/mmcif_pdbx.json (single alloc, no TOCTOU)
-                const config_path = fetch.getConfigDictPath(gpa) catch {
-                    // Fall through to exe_dir fallback
-                    const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
-                        try ew.writeAll("Error: dictionary not found. Run 'mmcif-dict fetch' to download, or use --dict/MMCIF_DICT_PATH.\n");
-                        try ew.flush();
-                        std.process.exit(1);
-                    };
-                    defer gpa.free(exe_dir);
-                    path_owned = true;
-                    break :blk try std.fmt.allocPrint(gpa, "{s}/../data/mmcif_pdbx.json", .{exe_dir});
-                };
-                if (std.fs.cwd().access(config_path, .{})) |_| {
-                    path_owned = true;
-                    break :blk config_path;
-                } else |_| {
-                    gpa.free(config_path);
-                }
-                // Fall back to exe_dir/../data/mmcif_pdbx.json
-                const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
-                    try ew.writeAll("Error: dictionary not found. Run 'mmcif-dict fetch' to download, or use --dict/MMCIF_DICT_PATH.\n");
-                    try ew.flush();
-                    std.process.exit(1);
-                };
-                defer gpa.free(exe_dir);
-                path_owned = true;
-                break :blk try std.fmt.allocPrint(gpa, "{s}/../data/mmcif_pdbx.json", .{exe_dir});
-            },
-            else => return err,
-        };
-        path_owned = true;
-        break :blk env_path;
+    // Resolve dictionary source in priority order:
+    //   1. `--dict PATH`                    (file, borrowed from argv)
+    //   2. `$MMCIF_DICT_PATH`               (file, owned — freed on exit)
+    //   3. `~/.config/mmcif-dict/<name>.mdict`  (file, owned if present)
+    //   4. embedded default                 (only when neither 1-3 apply AND
+    //                                        name == default_name; otherwise
+    //                                        error so a missing `ihm` cache
+    //                                        never gets silently served the
+    //                                        pdbx bytes)
+    //
+    // `path_owned` discriminates the allocation state of the `.file` slice:
+    // argv-sourced paths borrow (false); env/cache paths own (true).
+    const Source = union(enum) {
+        file: []const u8,
+        embedded,
     };
-    defer if (path_owned) gpa.free(path);
 
-    var dictionary = dict.Dictionary.loadFromFile(gpa, path) catch |err| {
-        if (err == error.InvalidMagic or err == error.UnsupportedVersion or err == error.WrongEndian or
-            err == error.TruncatedHeader or err == error.SectionOutOfBounds)
-        {
-            try ew.print("Error: {s} is not a valid .mdict file: {}\n", .{ path, err });
-            try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic -o DICT.mdict' to produce one.\n");
-        } else if (err == error.FileNotFound) {
-            try ew.print("Error: dictionary not found: {s}\n", .{path});
-            try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic' against a .dic file to produce one.\n");
-        } else {
-            try ew.print("Error loading dictionary from {s}: {}\n", .{ path, err });
+    var path_owned = false;
+    const name = dict_name orelse fetch.default_name;
+    const source: Source = if (dict_path) |p| Source{ .file = p } else blk: {
+        if (std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH")) |env_path| {
+            path_owned = true;
+            break :blk Source{ .file = env_path };
+        } else |err| switch (err) {
+            error.EnvironmentVariableNotFound => {},
+            else => return err,
         }
+        const config_path = fetch.getConfigMdictPath(gpa, name) catch |err| {
+            try ew.print("Error: invalid dictionary name '{s}': {}\n", .{ name, err });
+            try ew.flush();
+            std.process.exit(1);
+        };
+        if (std.fs.cwd().access(config_path, .{})) |_| {
+            path_owned = true;
+            break :blk Source{ .file = config_path };
+        } else |_| {
+            gpa.free(config_path);
+        }
+        if (std.mem.eql(u8, name, fetch.default_name)) {
+            break :blk Source.embedded;
+        }
+        try ew.print("Error: dictionary cache '{s}' not found. Run 'mmcif-dict fetch --name {s} --url <URL>' or use --dict PATH.\n", .{ name, name });
         try ew.flush();
         std.process.exit(1);
+    };
+    defer if (path_owned) switch (source) {
+        .file => |p| gpa.free(p),
+        .embedded => {},
+    };
+
+    var dictionary = switch (source) {
+        .file => |p| dict.Dictionary.loadFromFile(gpa, p) catch |err| {
+            if (err == error.InvalidMagic or err == error.UnsupportedVersion or err == error.WrongEndian or
+                err == error.TruncatedHeader or err == error.SectionOutOfBounds)
+            {
+                try ew.print("Error: {s} is not a valid .mdict file: {}\n", .{ p, err });
+                try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic -o DICT.mdict' to produce one.\n");
+            } else if (err == error.FileNotFound) {
+                try ew.print("Error: dictionary not found: {s}\n", .{p});
+                try ew.writeAll("Hint: run 'mmcif-dict fetch' to download, or 'mmcif-dict compile DICT.dic' from a .dic file.\n");
+            } else {
+                try ew.print("Error loading dictionary from {s}: {}\n", .{ p, err });
+            }
+            try ew.flush();
+            std.process.exit(1);
+        },
+        .embedded => dict.Dictionary.loadFromBuf(gpa, embedded_pdbx) catch |err| {
+            try ew.print("Error: embedded dictionary is invalid ({}).\n", .{err});
+            try ew.writeAll("This indicates a corrupted build. Please rebuild from source or reinstall.\n");
+            try ew.flush();
+            std.process.exit(1);
+        },
     };
     defer dictionary.deinit();
 
@@ -318,6 +368,81 @@ fn runSearch(
     try output.printSearchResults(w, cmd_args[0], results, format);
 }
 
+fn runFetch(
+    gpa: std.mem.Allocator,
+    cmd_args: []const []const u8,
+    dict_name: ?[]const u8,
+    w: *std.io.Writer,
+    ew: *std.io.Writer,
+) !void {
+    var url: []const u8 = fetch.default_url;
+    var url_set = false;
+    var i: usize = 0;
+    while (i < cmd_args.len) : (i += 1) {
+        const a = cmd_args[i];
+        if (std.mem.eql(u8, a, "--url")) {
+            i += 1;
+            if (i >= cmd_args.len) {
+                try ew.writeAll("Error: --url requires a URL argument\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            if (cmd_args[i].len == 0) {
+                try ew.writeAll("Error: --url requires a non-empty URL\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            url = cmd_args[i];
+            url_set = true;
+        } else if (std.mem.startsWith(u8, a, "--url=")) {
+            const v = a[6..];
+            if (v.len == 0) {
+                try ew.writeAll("Error: --url= requires a non-empty URL\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            url = v;
+            url_set = true;
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            try ew.print("Unknown flag: {s}\n", .{a});
+            try ew.flush();
+            std.process.exit(1);
+        } else if (!url_set) {
+            // Positional URL (legacy form: `fetch URL`)
+            url = a;
+            url_set = true;
+        } else {
+            try ew.print("Unexpected argument: {s}\n", .{a});
+            try ew.flush();
+            std.process.exit(1);
+        }
+    }
+    // Name priority: --name flag (top-level) > derived from URL > default.
+    // Refuse to fall back to `default_name` here when derivation fails —
+    // clobbering the user's primary `pdbx` cache with an unrelated URL's
+    // contents would be a nasty surprise.
+    const name: []const u8 = name_blk: {
+        if (dict_name) |n| break :name_blk n;
+        if (url_set) {
+            if (fetch.nameFromUrl(url)) |derived| break :name_blk derived;
+            try ew.print(
+                "Error: cannot derive a safe cache name from URL. Pass --name NAME explicitly (falling back to '{s}' would overwrite the default cache).\n",
+                .{fetch.default_name},
+            );
+            try ew.flush();
+            std.process.exit(1);
+        }
+        break :name_blk fetch.default_name;
+    };
+    fetch.fetchAndCompile(gpa, url, name, w, ew) catch |err| {
+        if (err != error.FetchFailed) {
+            try ew.print("Error: {}\n", .{err});
+            try ew.flush();
+        }
+        std.process.exit(1);
+    };
+}
+
 fn runCompile(
     gpa: std.mem.Allocator,
     cmd_args: []const []const u8,
@@ -372,17 +497,38 @@ fn runCompile(
     };
 
     var bd = dic_loader.loadFromDicFile(gpa, in) catch |err| {
-        try ew.print("Error loading {s}: {}\n", .{ in, err });
+        if (err == error.StreamTooLong) {
+            try ew.print("Error loading {s}: file exceeds the 128 MB compile limit.\n", .{in});
+        } else {
+            try ew.print("Error loading {s}: {}\n", .{ in, err });
+        }
         try ew.flush();
         return error.CompileFailed;
     };
     defer bd.deinit();
 
-    mdict_writer.writeToFile(gpa, &bd, out) catch |err| {
-        try ew.print("Error writing {s}: {}\n", .{ out, err });
+    // Write via temp + rename so an interrupted compile doesn't leave a
+    // corrupt .mdict that later `loadFromFile` calls would reject with a
+    // confusing "not a valid .mdict" error.
+    const tmp_out = try std.fmt.allocPrint(gpa, "{s}.tmp", .{out});
+    defer gpa.free(tmp_out);
+    var tmp_exists = true;
+    defer if (tmp_exists) {
+        std.fs.cwd().deleteFile(tmp_out) catch {};
+    };
+
+    mdict_writer.writeToFile(gpa, &bd, tmp_out) catch |err| {
+        try ew.print("Error writing {s}: {}\n", .{ tmp_out, err });
         try ew.flush();
         return error.CompileFailed;
     };
+
+    std.fs.cwd().rename(tmp_out, out) catch |err| {
+        try ew.print("Error renaming {s} -> {s}: {}\n", .{ tmp_out, out, err });
+        try ew.flush();
+        return error.CompileFailed;
+    };
+    tmp_exists = false;
 
     try w.print("Compiled {s} -> {s}\n", .{ in, out });
     try w.flush();
