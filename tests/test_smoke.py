@@ -119,6 +119,31 @@ def test_dict_flag_rejected_with_compile() -> None:
     assert "compile" in r.stderr
 
 
+def test_name_flag_rejected_with_compile() -> None:
+    r = _run("--name", "foo", "compile", "/tmp/in.dic", "-o", "/tmp/out.mdict")
+    assert r.returncode != 0
+    assert "--name" in r.stderr
+    assert "compile" in r.stderr
+
+
+def test_mmcif_dict_path_overrides_name() -> None:
+    # MMCIF_DICT_PATH pointing at nonexistent path must not silently fall
+    # through to the embedded default — it should error out loudly.
+    env = {k: v for k, v in os.environ.items()}
+    env["MMCIF_DICT_PATH"] = "/nonexistent-dict-for-smoke-test.mdict"
+    env["XDG_CONFIG_HOME"] = "/nonexistent-xdg-dir-for-smoke-test"
+    env["HOME"] = "/nonexistent-home-for-smoke-test"
+    r = subprocess.run(
+        [str(BINARY), "category", "atom_site"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert r.returncode != 0
+    # The path should appear in the error; confirms no silent fallback.
+    assert "nonexistent-dict-for-smoke-test" in r.stderr
+
+
 def test_empty_name_flag_rejected() -> None:
     r = _run("--name=", "category", "atom_site")
     assert r.returncode != 0

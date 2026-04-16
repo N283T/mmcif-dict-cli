@@ -127,6 +127,11 @@ pub fn main() !void {
             try ew.flush();
             std.process.exit(1);
         }
+        if (dict_name != null) {
+            try ew.writeAll("Error: --name applies to cache resolution and cannot be combined with 'compile'.\n");
+            try ew.flush();
+            std.process.exit(1);
+        }
         runCompile(gpa, positional.items[1..], w, ew) catch |err| {
             if (err != error.CompileFailed) {
                 try ew.print("Error: {}\n", .{err});
@@ -137,12 +142,20 @@ pub fn main() !void {
         return;
     }
 
-    // Resolve dictionary source: --dict > $MMCIF_DICT_PATH > named cache > embedded default.
-    // The embedded fallback only applies when the user hasn't asked for a
-    // different name; otherwise we fail loudly so a missing `ihm` cache isn't
-    // silently served from the pdbx dictionary.
+    // Resolve dictionary source in priority order:
+    //   1. `--dict PATH`                    (file, borrowed from argv)
+    //   2. `$MMCIF_DICT_PATH`               (file, owned — freed on exit)
+    //   3. `~/.config/mmcif-dict/<name>.mdict`  (file, owned if present)
+    //   4. embedded default                 (only when neither 1-3 apply AND
+    //                                        name == default_name; otherwise
+    //                                        error so a missing `ihm` cache
+    //                                        never gets silently served the
+    //                                        pdbx bytes)
+    //
+    // `path_owned` discriminates the allocation state of the `.file` slice:
+    // argv-sourced paths borrow (false); env/cache paths own (true).
     const Source = union(enum) {
-        file: []const u8, // path; freed on exit when `path_owned` is true
+        file: []const u8,
         embedded,
     };
 
@@ -405,15 +418,15 @@ fn runFetch(
         }
     }
     // Name priority: --name flag (top-level) > derived from URL > default.
-    // If derivation fails (invalid basename), warn rather than silently
-    // overwriting the default `pdbx` cache — that surprise would clobber the
-    // user's primary dictionary.
+    // Refuse to fall back to `default_name` here when derivation fails —
+    // clobbering the user's primary `pdbx` cache with an unrelated URL's
+    // contents would be a nasty surprise.
     const name: []const u8 = name_blk: {
         if (dict_name) |n| break :name_blk n;
         if (url_set) {
             if (fetch.nameFromUrl(url)) |derived| break :name_blk derived;
             try ew.print(
-                "Warning: cannot derive a safe cache name from URL; using '--name {s}' would overwrite the default cache. Pass --name explicitly.\n",
+                "Error: cannot derive a safe cache name from URL. Pass --name NAME explicitly (falling back to '{s}' would overwrite the default cache).\n",
                 .{fetch.default_name},
             );
             try ew.flush();

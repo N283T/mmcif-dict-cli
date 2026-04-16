@@ -89,6 +89,10 @@ pub fn nameFromUrl(url: []const u8) ?[]const u8 {
 /// Print a human-readable explanation of a fetch error. Broad catches that
 /// conflate "network down" with "TLS broken" with "out of memory" mislead
 /// users, so each error class gets specific guidance.
+///
+/// The Zig 0.15 TLS error set has many `TlsAlert*` variants (e.g.
+/// `TlsAlertHandshakeFailure`, `TlsAlertBadCertificate`) and enumerating them
+/// all is brittle; we pattern-match the error name prefix in the `else` arm.
 fn printFetchError(ew: *std.io.Writer, err: anyerror) !void {
     switch (err) {
         error.OutOfMemory => {
@@ -101,17 +105,22 @@ fn printFetchError(ew: *std.io.Writer, err: anyerror) !void {
         error.ConnectionRefused, error.ConnectionResetByPeer, error.ConnectionTimedOut, error.NetworkUnreachable => {
             try ew.print("Download failed: {}. Check your network connection.\n", .{err});
         },
-        error.TlsInitializationFailed, error.TlsAlert, error.TlsFailure, error.CertificateBundleLoadFailure => {
+        error.TlsInitializationFailed, error.CertificateBundleLoadFailure => {
             try ew.print("Download failed: {}. TLS/certificate error.\n", .{err});
         },
         error.TooManyHttpRedirects, error.RedirectRequiresResend => {
             try ew.print("Download failed: {}. Redirect loop or unsupported redirect.\n", .{err});
         },
-        error.UnsupportedUrlScheme, error.UriMissingHost => {
+        error.UnsupportedUriScheme, error.UriMissingHost, error.UriHostTooLong => {
             try ew.print("Download failed: {}. The URL is malformed.\n", .{err});
         },
         else => {
-            try ew.print("Download failed: {}.\n", .{err});
+            const name = @errorName(err);
+            if (std.mem.startsWith(u8, name, "Tls")) {
+                try ew.print("Download failed: {s}. TLS/certificate error.\n", .{name});
+            } else {
+                try ew.print("Download failed: {}.\n", .{err});
+            }
         },
     }
 }
@@ -312,4 +321,28 @@ test "nameFromUrl returns null on empty or hidden stems" {
     try std.testing.expect(nameFromUrl("https://example.com/.dic") == null);
     try std.testing.expect(nameFromUrl("https://example.com/.hidden.dic") == null);
     try std.testing.expect(nameFromUrl("https://example.com/foo bar.dic") == null);
+}
+
+test "sniffNonCif detects HTML" {
+    try std.testing.expectEqualStrings("HTML", sniffNonCif("<!DOCTYPE html><html>").?);
+    try std.testing.expectEqualStrings("HTML", sniffNonCif("<!doctype HTML>").?);
+    try std.testing.expectEqualStrings("HTML", sniffNonCif("<html><body>").?);
+    try std.testing.expectEqualStrings("HTML", sniffNonCif("<HTML>").?);
+    try std.testing.expectEqualStrings("HTML", sniffNonCif("  \r\n<html>").?);
+}
+
+test "sniffNonCif detects XML and JSON" {
+    try std.testing.expectEqualStrings("XML", sniffNonCif("<?xml version=\"1.0\"?>").?);
+    try std.testing.expectEqualStrings("JSON", sniffNonCif("{\"error\":\"not found\"}").?);
+    try std.testing.expectEqualStrings("JSON", sniffNonCif("[1, 2, 3]").?);
+    try std.testing.expectEqualStrings("JSON", sniffNonCif("  \n{\"ok\": true}").?);
+}
+
+test "sniffNonCif returns null on valid CIF bodies" {
+    try std.testing.expect(sniffNonCif("data_mmcif_pdbx\n") == null);
+    try std.testing.expect(sniffNonCif("# comment\n_cat.foo bar\n") == null);
+    try std.testing.expect(sniffNonCif("save_frame_x\n") == null);
+    try std.testing.expect(sniffNonCif("loop_\n_atom.id\n") == null);
+    try std.testing.expect(sniffNonCif("") == null);
+    try std.testing.expect(sniffNonCif("   \n\t") == null);
 }
