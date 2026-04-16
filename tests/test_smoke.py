@@ -3,11 +3,11 @@
 # requires-python = ">=3.12"
 # dependencies = ["pytest"]
 # ///
-"""Smoke test: verify the embedded dictionary is accessible via the CLI.
+"""Smoke test: verify the CLI works against a compiled fixture dictionary.
 
-Runs the built binary against a fresh environment (no cache file, no env
-vars) and checks that every top-level read command works end-to-end using
-only the @embedFile'd default pdbx dictionary.
+Compiles tests/fixtures/minimal.dic into an .mdict file once per module,
+then passes --dict <path> to every invocation. Cache and env isolation is
+kept so tests never accidentally pick up the user's real config.
 """
 
 from __future__ import annotations
@@ -21,6 +21,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BINARY = PROJECT_ROOT.joinpath("zig-out", "bin", "mmcif-dict")
+FIXTURE_DIC = PROJECT_ROOT.joinpath("tests", "fixtures", "minimal.dic")
+
+# Set by the module-scoped fixture; used by _run_with_dict().
+_compiled_mdict: Path | None = None
 
 
 def _ensure_binary() -> None:
@@ -28,69 +32,108 @@ def _ensure_binary() -> None:
         subprocess.run(["zig", "build"], cwd=PROJECT_ROOT, check=True)
 
 
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
-    # Isolate from the user's real cache + env so we always exercise the
-    # embedded fallback, not whatever is in ~/.config/mmcif-dict/.
+def _isolated_env() -> dict[str, str]:
+    """Return an env dict isolated from the user's real cache/env (no cache)."""
     env = {k: v for k, v in os.environ.items() if k != "MMCIF_DICT_PATH"}
     env["XDG_CONFIG_HOME"] = "/nonexistent-xdg-dir-for-smoke-test"
     env["HOME"] = "/nonexistent-home-for-smoke-test"
+    return env
+
+
+def _run(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run the binary with cache/env isolation but without --dict."""
     return subprocess.run(
         [str(BINARY), *args],
         capture_output=True,
         text=True,
-        env=env,
+        env=_isolated_env(),
+    )
+
+
+def _run_with_dict(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run the binary with --dict pointing at the compiled fixture."""
+    assert _compiled_mdict is not None, "fixture not initialised"
+    return subprocess.run(
+        [str(BINARY), "--dict", str(_compiled_mdict), *args],
+        capture_output=True,
+        text=True,
+        env=_isolated_env(),
     )
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _build_once() -> None:
+def _build_and_compile(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Build the binary and compile minimal.dic to .mdict (once per module)."""
+    global _compiled_mdict  # noqa: PLW0603
     _ensure_binary()
+    mdict_path = tmp_path_factory.mktemp("smoke").joinpath("minimal.mdict")
+    r = subprocess.run(
+        [str(BINARY), "compile", str(FIXTURE_DIC), "-o", str(mdict_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, f"compile failed: {r.stderr}"
+    _compiled_mdict = mdict_path
 
 
-def test_embedded_pdbx_category_lookup() -> None:
-    r = _run("category", "atom_site")
+# ── Tests that need the fixture dictionary ───────────────────────────
+
+
+def test_category_lookup() -> None:
+    r = _run_with_dict("category", "test_category")
     assert r.returncode == 0, r.stderr
-    assert "atom_site" in r.stdout
-    assert "label_atom_id" in r.stdout
+    assert "test_category" in r.stdout
+    assert "id" in r.stdout
 
 
-def test_embedded_pdbx_item_lookup() -> None:
-    r = _run("item", "_atom_site.label_atom_id")
+def test_item_lookup() -> None:
+    r = _run_with_dict("item", "_test_category.id")
     assert r.returncode == 0, r.stderr
-    assert "label_atom_id" in r.stdout
-    assert "atom_site" in r.stdout
+    assert "id" in r.stdout
+    assert "test_category" in r.stdout
 
 
-def test_embedded_pdbx_show_auto_detects_category() -> None:
-    r = _run("show", "_atom_site")
+def test_show_auto_detects_category() -> None:
+    r = _run_with_dict("show", "_test_category")
     assert r.returncode == 0, r.stderr
-    assert "Category: atom_site" in r.stdout
+    assert "Category: test_category" in r.stdout
 
 
-def test_embedded_pdbx_show_auto_detects_item() -> None:
-    r = _run("show", "_atom_site.label_atom_id")
+def test_show_auto_detects_item() -> None:
+    r = _run_with_dict("show", "_test_category.id")
     assert r.returncode == 0, r.stderr
-    assert "Item: _atom_site.label_atom_id" in r.stdout
+    assert "Item: _test_category.id" in r.stdout
 
 
 def test_category_list_nonempty() -> None:
-    r = _run("category")
+    r = _run_with_dict("category")
     assert r.returncode == 0, r.stderr
     lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
-    assert len(lines) > 500, f"got {len(lines)} categories"
+    assert len(lines) > 0, f"got {len(lines)} categories"
 
 
 def test_json_output_parses() -> None:
-    r = _run("--json", "category", "atom_site")
+    r = _run_with_dict("--json", "category", "test_category")
     assert r.returncode == 0, r.stderr
     data = json.loads(r.stdout)
-    assert data["id"] == "atom_site"
+    assert data["id"] == "test_category"
     assert isinstance(data.get("items"), list)
     assert len(data["items"]) > 0
 
 
+# ── Tests that do NOT need a dictionary ──────────────────────────────
+
+
+def test_no_dict_error_message() -> None:
+    """Without --dict and with isolated cache, the CLI should fail clearly."""
+    r = _run("category", "test_category")
+    assert r.returncode != 0
+    assert "not found" in r.stderr
+    assert "mmcif-dict fetch" in r.stderr
+
+
 def test_unknown_name_reports_error() -> None:
-    # --name ihm has no cache and no embedded fallback → should exit 1
+    # --name ihm has no cache → should exit 1
     r = _run("--name", "ihm", "category", "atom_site")
     assert r.returncode != 0
     # Match on stable tokens so message tweaks don't break CI.
@@ -127,8 +170,7 @@ def test_name_flag_rejected_with_compile() -> None:
 
 
 def test_mmcif_dict_path_overrides_name() -> None:
-    # MMCIF_DICT_PATH pointing at nonexistent path must not silently fall
-    # through to the embedded default — it should error out loudly.
+    # MMCIF_DICT_PATH pointing at nonexistent path should error out loudly.
     env = {k: v for k, v in os.environ.items()}
     env["MMCIF_DICT_PATH"] = "/nonexistent-dict-for-smoke-test.mdict"
     env["XDG_CONFIG_HOME"] = "/nonexistent-xdg-dir-for-smoke-test"

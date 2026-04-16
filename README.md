@@ -8,7 +8,7 @@
 
 CLI tool for querying mmCIF PDBx dictionary definitions.
 
-Uses PDBj's JSON representation of the mmCIF dictionary for fast lookups of categories, items, and their relationships.
+Provides fast lookups of categories, items, and their relationships from mmCIF PDBx dictionaries.
 
 ## Installation
 
@@ -63,12 +63,11 @@ The binary is at `zig-out/bin/mmcif-dict`.
 
 ## Quick Start
 
-The default PDBx dictionary is embedded in the binary — `mmcif-dict` works
-offline out of the box. `fetch` is only needed to update the cached copy or to
-add a different dictionary (e.g. IHM, CIF core).
-
 ```bash
-# List all 604 categories (uses the embedded dictionary)
+# Download the default PDBx dictionary (~5 MB, required on first use)
+mmcif-dict fetch
+
+# List all 604 categories
 mmcif-dict category
 
 # Auto-detect and show category or item
@@ -89,9 +88,6 @@ mmcif-dict search "electron density"
 
 # JSON output (for AI tools / scripts)
 mmcif-dict --json category atom_site
-
-# Refresh the cached PDBx dictionary from wwPDB
-mmcif-dict fetch
 
 # Fetch an alternate dictionary into its own cache
 mmcif-dict fetch --name ihm --url https://mmcif.wwpdb.org/dictionaries/ascii/mmcif_ihm.dic
@@ -196,12 +192,9 @@ The dictionary source is resolved in this order:
 2. `$MMCIF_DICT_PATH` environment variable
 3. `~/.config/mmcif-dict/<name>.mdict` (installed by `fetch`; `<name>` comes
    from `--name NAME` and defaults to `pdbx`)
-4. Embedded default dictionary (only when `<name>` is `pdbx` and none of the
-   above applies) — the binary ships with a pre-compiled PDBx dictionary so
-   the default configuration works without a cache file or network.
 
-Requesting `--name ihm` (or any non-default name) without a cache fails
-loudly rather than silently serving the embedded PDBx data.
+If no dictionary is found, the CLI prints an error directing you to run
+`mmcif-dict fetch`.
 
 The runtime format is a zero-copy native binary (`.mdict`). Produce one with
 `mmcif-dict compile` or `mmcif-dict fetch`.
@@ -219,15 +212,15 @@ The runtime format is a zero-copy native binary (`.mdict`). Produce one with
 
 | Variable | Description |
 |----------|-------------|
-| `MMCIF_DICT_PATH` | Default path to a `.mdict` file (overrides named-cache lookup and the embedded default) |
+| `MMCIF_DICT_PATH` | Default path to a `.mdict` file (overrides named-cache lookup) |
 
 ## Data Source
 
 Dictionary data originates from the [wwPDB mmCIF PDBx dictionary](http://mmcif.pdb.org/).
-The default PDBx dictionary is embedded in the binary via build-time compile
-from `data/mmcif_pdbx.dic`. Other dictionaries can be installed as named
-caches under `~/.config/mmcif-dict/<name>.mdict` via `mmcif-dict fetch --name NAME --url <URL>`
-or produced locally with `mmcif-dict compile input.dic -o out.mdict`.
+Run `mmcif-dict fetch` to download and compile the default PDBx dictionary
+to `~/.config/mmcif-dict/pdbx.mdict`. Other dictionaries can be installed as
+named caches via `mmcif-dict fetch --name NAME --url <URL>` or produced
+locally with `mmcif-dict compile input.dic -o out.mdict`.
 
 ## License
 

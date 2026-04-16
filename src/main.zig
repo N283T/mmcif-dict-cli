@@ -5,11 +5,6 @@ const fetch = @import("fetch.zig");
 const mdict_writer = @import("mdict_writer.zig");
 const output = @import("output.zig");
 
-/// Default PDBx dictionary embedded at build time by build.zig's two-stage
-/// compile. Serves as the fallback when no cache is available so that a
-/// freshly-installed binary works offline without `fetch`.
-const embedded_pdbx = @embedFile("embedded_pdbx");
-
 const usage =
     \\Usage: mmcif-dict <command> [options] [arguments]
     \\
@@ -142,29 +137,17 @@ pub fn main() !void {
         return;
     }
 
-    // Resolve dictionary source in priority order:
-    //   1. `--dict PATH`                    (file, borrowed from argv)
-    //   2. `$MMCIF_DICT_PATH`               (file, owned — freed on exit)
-    //   3. `~/.config/mmcif-dict/<name>.mdict`  (file, owned if present)
-    //   4. embedded default                 (only when neither 1-3 apply AND
-    //                                        name == default_name; otherwise
-    //                                        error so a missing `ihm` cache
-    //                                        never gets silently served the
-    //                                        pdbx bytes)
-    //
-    // `path_owned` discriminates the allocation state of the `.file` slice:
-    // argv-sourced paths borrow (false); env/cache paths own (true).
-    const Source = union(enum) {
-        file: []const u8,
-        embedded,
-    };
-
+    // Resolve dictionary path in priority order:
+    //   1. `--dict PATH`                        (borrowed from argv)
+    //   2. `$MMCIF_DICT_PATH`                   (owned — freed on exit)
+    //   3. `~/.config/mmcif-dict/<name>.mdict`   (owned if present)
+    //   4. Error: prompt user to run `fetch`
     var path_owned = false;
     const name = dict_name orelse fetch.default_name;
-    const source: Source = if (dict_path) |p| Source{ .file = p } else blk: {
+    const resolved_path: []const u8 = if (dict_path) |p| p else blk: {
         if (std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH")) |env_path| {
             path_owned = true;
-            break :blk Source{ .file = env_path };
+            break :blk env_path;
         } else |err| switch (err) {
             error.EnvironmentVariableNotFound => {},
             else => return err,
@@ -176,44 +159,41 @@ pub fn main() !void {
         };
         if (std.fs.cwd().access(config_path, .{})) |_| {
             path_owned = true;
-            break :blk Source{ .file = config_path };
-        } else |_| {
-            gpa.free(config_path);
+            break :blk config_path;
+        } else |err| {
+            defer gpa.free(config_path);
+            if (err != error.FileNotFound) {
+                try ew.print("Error: cannot access dictionary cache '{s}': {}\n", .{ config_path, err });
+                try ew.writeAll("Check file permissions or remove the file and re-run 'mmcif-dict fetch'.\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
         }
+        try ew.print("Error: dictionary '{s}' not found.\n", .{name});
         if (std.mem.eql(u8, name, fetch.default_name)) {
-            break :blk Source.embedded;
+            try ew.writeAll("Run 'mmcif-dict fetch' to download the default PDBx dictionary (~5 MB).\n");
+        } else {
+            try ew.print("Run 'mmcif-dict fetch --name {s} --url <URL>' or use --dict PATH.\n", .{name});
         }
-        try ew.print("Error: dictionary cache '{s}' not found. Run 'mmcif-dict fetch --name {s} --url <URL>' or use --dict PATH.\n", .{ name, name });
         try ew.flush();
         std.process.exit(1);
     };
-    defer if (path_owned) switch (source) {
-        .file => |p| gpa.free(p),
-        .embedded => {},
-    };
+    defer if (path_owned) gpa.free(resolved_path);
 
-    var dictionary = switch (source) {
-        .file => |p| dict.Dictionary.loadFromFile(gpa, p) catch |err| {
-            if (err == error.InvalidMagic or err == error.UnsupportedVersion or err == error.WrongEndian or
-                err == error.TruncatedHeader or err == error.SectionOutOfBounds)
-            {
-                try ew.print("Error: {s} is not a valid .mdict file: {}\n", .{ p, err });
-                try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic -o DICT.mdict' to produce one.\n");
-            } else if (err == error.FileNotFound) {
-                try ew.print("Error: dictionary not found: {s}\n", .{p});
-                try ew.writeAll("Hint: run 'mmcif-dict fetch' to download, or 'mmcif-dict compile DICT.dic' from a .dic file.\n");
-            } else {
-                try ew.print("Error loading dictionary from {s}: {}\n", .{ p, err });
-            }
-            try ew.flush();
-            std.process.exit(1);
-        },
-        .embedded => dict.Dictionary.loadFromBuf(gpa, embedded_pdbx) catch |err| {
-            try ew.print("Error: embedded dictionary is invalid ({}).\n", .{err});
-            try ew.writeAll("This indicates a corrupted build. Please rebuild from source or reinstall.\n");
-            try ew.flush();
-            std.process.exit(1);
-        },
+    var dictionary = dict.Dictionary.loadFromFile(gpa, resolved_path) catch |err| {
+        if (err == error.InvalidMagic or err == error.UnsupportedVersion or err == error.WrongEndian or
+            err == error.TruncatedHeader or err == error.SectionOutOfBounds)
+        {
+            try ew.print("Error: {s} is not a valid .mdict file: {}\n", .{ resolved_path, err });
+            try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic -o DICT.mdict' to produce one.\n");
+        } else if (err == error.FileNotFound) {
+            try ew.print("Error: dictionary not found: {s}\n", .{resolved_path});
+            try ew.writeAll("Hint: run 'mmcif-dict fetch' to download, or 'mmcif-dict compile DICT.dic' from a .dic file.\n");
+        } else {
+            try ew.print("Error loading dictionary from {s}: {}\n", .{ resolved_path, err });
+        }
+        try ew.flush();
+        std.process.exit(1);
     };
     defer dictionary.deinit();
 
