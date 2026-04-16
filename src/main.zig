@@ -366,6 +366,10 @@ fn runCompile(
                 return error.CompileFailed;
             }
             output_path = cmd_args[i];
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            try ew.print("Unknown flag: {s}\n", .{a});
+            try ew.flush();
+            return error.CompileFailed;
         } else if (input_path == null) {
             input_path = a;
         } else {
