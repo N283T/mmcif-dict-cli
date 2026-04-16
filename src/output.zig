@@ -33,7 +33,8 @@ pub fn printCategory(w: *std.io.Writer, cat: dict.Category, opts: Options) !void
                 }
                 try w.print("\n", .{});
             }
-            try w.print("\nDescription:\n{s}\n", .{cat.description});
+            try w.print("\nDescription:\n", .{});
+            try writeDescription(w, cat.description);
             if (cat.items.len > 0) {
                 try w.print("\nItems ({d}):\n", .{cat.items.len});
                 for (cat.items) |item| {
@@ -66,7 +67,8 @@ pub fn printItem(w: *std.io.Writer, item: dict.Item, opts: Options) !void {
             try w.print("Category: {s}\n", .{item.category_id});
             try w.print("Type: {s}\n", .{item.type_code});
             try w.print("Mandatory: {s}\n", .{item.mandatory_code});
-            try w.print("\nDescription:\n{s}\n", .{item.description});
+            try w.print("\nDescription:\n", .{});
+            try writeDescription(w, item.description);
             if (item.enum_values.len > 0) {
                 try w.print("\nAllowed values:\n", .{});
                 for (item.enum_values) |v| {
@@ -211,6 +213,111 @@ fn writeJsonStringArray(w: *std.io.Writer, arr: []const []const u8) !void {
         try writeJsonString(w, s);
     }
     try w.writeByte(']');
+}
+
+/// Strip the common leading whitespace from all non-blank lines of `text`.
+/// mmCIF .dic files preserve the indentation used in the source file inside
+/// multi-line description strings; this helper restores flush-left paragraphs.
+fn writeDescription(w: *std.io.Writer, text: []const u8) !void {
+    // Pass 1: find the minimum leading whitespace run across non-blank lines.
+    var min_indent: usize = std.math.maxInt(usize);
+    var start: usize = 0;
+    while (start < text.len) {
+        const nl = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        const line = text[start..nl];
+        const stripped = std.mem.trimLeft(u8, line, " \t");
+        if (stripped.len > 0) {
+            const indent = line.len - stripped.len;
+            if (indent < min_indent) min_indent = indent;
+        }
+        start = nl + 1;
+        if (nl == text.len) break;
+    }
+    if (min_indent == std.math.maxInt(usize)) min_indent = 0;
+
+    // Pass 2: strip that prefix from each line and write.
+    start = 0;
+    while (start < text.len) {
+        const nl = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        const line = text[start..nl];
+        if (line.len >= min_indent) {
+            try w.writeAll(line[min_indent..]);
+        } else {
+            try w.writeAll(line);
+        }
+        try w.writeByte('\n');
+        start = nl + 1;
+        if (nl == text.len) break;
+    }
+}
+
+test "writeDescription strips common leading whitespace" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("desc.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [1024]u8 = undefined;
+    var fw = file.writer(&buf);
+    const w = &fw.interface;
+
+    const input =
+        "              Data items in the ATOM_SITE category record details about\n" ++
+        "               the atom sites in a macromolecular crystal structure.\n" ++
+        "\n" ++
+        "              Second paragraph here.\n";
+    try writeDescription(w, input);
+    try w.flush();
+
+    try file.seekTo(0);
+    var out: [1024]u8 = undefined;
+    const n = try file.readAll(&out);
+    const expected =
+        "Data items in the ATOM_SITE category record details about\n" ++
+        " the atom sites in a macromolecular crystal structure.\n" ++
+        "\n" ++
+        "Second paragraph here.\n";
+    try std.testing.expectEqualStrings(expected, out[0..n]);
+}
+
+test "writeDescription preserves text with no common prefix" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("desc2.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [1024]u8 = undefined;
+    var fw = file.writer(&buf);
+    const w = &fw.interface;
+
+    const input = "No indent.\nSecond line.\n";
+    try writeDescription(w, input);
+    try w.flush();
+
+    try file.seekTo(0);
+    var out: [256]u8 = undefined;
+    const n = try file.readAll(&out);
+    try std.testing.expectEqualStrings(input, out[0..n]);
+}
+
+test "writeDescription handles tabs as whitespace" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("desc3.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [1024]u8 = undefined;
+    var fw = file.writer(&buf);
+    const w = &fw.interface;
+
+    const input = "\t\tline one\n\t\tline two\n";
+    try writeDescription(w, input);
+    try w.flush();
+
+    try file.seekTo(0);
+    var out: [256]u8 = undefined;
+    const n = try file.readAll(&out);
+    try std.testing.expectEqualStrings("line one\nline two\n", out[0..n]);
 }
 
 test "writeJsonString escapes special characters" {
