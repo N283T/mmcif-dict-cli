@@ -5,6 +5,7 @@ const dict = @import("dict.zig");
 const fetch = @import("fetch.zig");
 const mdict_writer = @import("mdict_writer.zig");
 const output = @import("output.zig");
+const term = @import("term.zig");
 
 const usage =
     \\Usage: mmcif-dict <command> [options] [arguments]
@@ -22,6 +23,7 @@ const usage =
     \\  --json                Output in JSON format
     \\  --dict PATH           Path to dictionary (.mdict)
     \\  --name NAME           Select named cache (default: pdbx)
+    \\  --no-table            Force plain tab-separated output (disables box drawing)
     \\  --version, -V         Show version and exit
     \\  --help, -h            Show this help
     \\
@@ -48,6 +50,7 @@ pub fn main() !void {
     const ew = &stderr_w.interface;
 
     var opts: output.Options = .{};
+    var force_no_table = false;
     var dict_path: ?[]const u8 = null;
     var dict_name: ?[]const u8 = null;
     var positional: std.ArrayList([]const u8) = .empty;
@@ -58,6 +61,8 @@ pub fn main() !void {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--json")) {
             opts.format = .json;
+        } else if (std.mem.eql(u8, arg, "--no-table")) {
+            force_no_table = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try w.writeAll(usage);
             try w.flush();
@@ -100,6 +105,18 @@ pub fn main() !void {
             dict_name = v;
         } else {
             try positional.append(gpa, arg);
+        }
+    }
+
+    // Decide text style for the output module.
+    // --json owns output; --no-table forces tsv; otherwise pick boxed on a tty.
+    if (opts.format == .text) {
+        const stdout_is_tty = term.isTty(stdout_file);
+        if (force_no_table or !stdout_is_tty) {
+            opts.text_style = .tsv;
+        } else {
+            opts.text_style = .boxed;
+            opts.terminal_width = term.width();
         }
     }
 
