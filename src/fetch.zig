@@ -1,10 +1,13 @@
 const std = @import("std");
+const dic_loader = @import("dic_loader.zig");
+const mdict_writer = @import("mdict_writer.zig");
 const Allocator = std.mem.Allocator;
 
-pub const default_url = "https://data.pdbj.org/pdbjplus/dictionaries/mmcif_pdbx.json.gz";
+pub const default_url = "https://mmcif.wwpdb.org/dictionaries/ascii/mmcif_pdbx_v50.dic";
+pub const default_name = "pdbx";
+
 const config_dir_name = "mmcif-dict";
-const dict_filename = "mmcif_pdbx.json.gz";
-const min_valid_size = 1024; // 1 KB — smallest valid dictionary .gz
+const mdict_ext = ".mdict";
 
 /// Return the config directory: ~/.config/mmcif-dict/
 fn getConfigDir(allocator: Allocator) ![]const u8 {
@@ -14,7 +17,6 @@ fn getConfigDir(allocator: Allocator) ![]const u8 {
     };
     defer allocator.free(home);
 
-    // Respect XDG_CONFIG_HOME if set
     const config_home = std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => try std.fmt.allocPrint(allocator, "{s}/.config", .{home}),
         else => return err,
@@ -24,226 +26,184 @@ fn getConfigDir(allocator: Allocator) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ config_home, config_dir_name });
 }
 
-/// Return the default config path: ~/.config/mmcif-dict/mmcif_pdbx.json.gz
-pub fn getConfigDictPath(allocator: Allocator) ![]const u8 {
-    const dir = try getConfigDir(allocator);
-    defer allocator.free(dir);
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, dict_filename });
+/// Validate a cache name. Cache names map directly to files under the config dir,
+/// so they must be a single path segment with no traversal tokens.
+fn validateName(name: []const u8) error{InvalidName}!void {
+    if (name.len == 0) return error.InvalidName;
+    if (std.mem.indexOfAny(u8, name, "/\\") != null) return error.InvalidName;
+    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidName;
+    // Reject hidden files and any embedded traversal token.
+    if (name[0] == '.') return error.InvalidName;
+    if (std.mem.indexOf(u8, name, "..") != null) return error.InvalidName;
 }
 
-/// Return the config path for a given URL (uses the URL's filename).
-fn getConfigDictPathForUrl(allocator: Allocator, url: []const u8) ![]const u8 {
+/// Return the cache path for a named dictionary, e.g. ~/.config/mmcif-dict/pdbx.mdict
+pub fn getConfigMdictPath(allocator: Allocator, name: []const u8) ![]const u8 {
+    try validateName(name);
     const dir = try getConfigDir(allocator);
     defer allocator.free(dir);
-    const filename = filenameFromUrl(url) orelse dict_filename;
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, filename });
+    return std.fmt.allocPrint(allocator, "{s}/{s}{s}", .{ dir, name, mdict_ext });
 }
 
-/// Extract filename from URL path (e.g. "mmcif_ihm_ext.json.gz" from a full URL).
-/// Strips query strings and fragments. Returns null for unsafe or empty filenames.
-fn filenameFromUrl(url: []const u8) ?[]const u8 {
-    // Strip query string and fragment before parsing path
+/// Derive a cache name from a dictionary URL's basename. Strips `.dic` / `.dic.gz`.
+/// Falls back to `default_name` when the basename is empty or would fail validation.
+pub fn nameFromUrl(url: []const u8) []const u8 {
     const clean = blk: {
         if (std.mem.indexOfScalar(u8, url, '?')) |q| break :blk url[0..q];
         if (std.mem.indexOfScalar(u8, url, '#')) |h| break :blk url[0..h];
         break :blk url;
     };
-    // Find the path portion (after "://host")
-    const path = if (std.mem.indexOf(u8, clean, "://")) |i| blk2: {
-        const after_scheme = clean[i + 3 ..];
-        break :blk2 if (std.mem.indexOfScalar(u8, after_scheme, '/')) |j| after_scheme[j..] else return null;
-    } else clean;
-    // Last component of the path
-    const last_slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return null;
-    const name = path[last_slash + 1 ..];
-    if (name.len == 0) return null;
-    // Reject path traversal or suspicious filenames
-    if (std.mem.indexOf(u8, name, "..") != null) return null;
-    return name;
+    const last = if (std.mem.lastIndexOfScalar(u8, clean, '/')) |s| clean[s + 1 ..] else clean;
+    const stem = if (std.mem.endsWith(u8, last, ".dic.gz"))
+        last[0 .. last.len - 7]
+    else if (std.mem.endsWith(u8, last, ".dic"))
+        last[0 .. last.len - 4]
+    else
+        last;
+    if (stem.len == 0) return default_name;
+    validateName(stem) catch return default_name;
+    return stem;
 }
 
-/// Check if the config dictionary file exists.
-pub fn configDictExists(allocator: Allocator) bool {
-    const path = getConfigDictPath(allocator) catch return false;
-    defer allocator.free(path);
-    std.fs.cwd().access(path, .{}) catch return false;
-    return true;
-}
-
-/// Fetch a dictionary and save to ~/.config/mmcif-dict/.
-/// Uses std.http.Client — no external dependencies required.
-/// The .gz is decompressed at load time (see json_loader.zig).
-pub fn fetchDictionary(allocator: Allocator, url: []const u8, w: *std.io.Writer, ew: *std.io.Writer) !void {
-    const dest_path = try getConfigDictPathForUrl(allocator, url);
+/// Download a CIF dictionary and compile it to the named `.mdict` cache.
+/// The cache is written via write-to-temp + atomic rename.
+pub fn fetchAndCompile(
+    allocator: Allocator,
+    url: []const u8,
+    name: []const u8,
+    w: *std.io.Writer,
+    ew: *std.io.Writer,
+) !void {
+    const dest_path = try getConfigMdictPath(allocator, name);
     defer allocator.free(dest_path);
 
-    // Create parent directory
     const dir_path = std.fs.path.dirname(dest_path) orelse return error.InvalidPath;
     std.fs.cwd().makePath(dir_path) catch |err| {
         try ew.print("Error creating directory {s}: {}\n", .{ dir_path, err });
         try ew.flush();
-        return err;
+        return error.FetchFailed;
     };
 
-    // Write to temp file, rename on success (atomic write)
+    try w.print("Downloading {s}\n", .{url});
+    try w.flush();
+
+    var client: std.http.Client = .{ .allocator = allocator };
+    defer client.deinit();
+
+    var body_writer: std.io.Writer.Allocating = .init(allocator);
+    defer body_writer.deinit();
+
+    const result = client.fetch(.{
+        .location = .{ .url = url },
+        .response_writer = &body_writer.writer,
+    }) catch |err| {
+        try ew.print("Download failed: {}. Check your network connection.\n", .{err});
+        try ew.flush();
+        return error.FetchFailed;
+    };
+    if (result.status != .ok) {
+        const code = @intFromEnum(result.status);
+        try ew.print("Download failed (HTTP {d}).\n", .{code});
+        if (code >= 500) {
+            try ew.writeAll("The server may be temporarily unavailable. Please try again later.\n");
+        } else if (result.status == .not_found) {
+            try ew.writeAll("The dictionary URL may have changed. Check for updates.\n");
+        }
+        try ew.flush();
+        return error.FetchFailed;
+    }
+
+    const body_bytes = body_writer.written();
+    try w.print("Compiling {d} bytes -> {s}\n", .{ body_bytes.len, dest_path });
+    try w.flush();
+
+    var bd = dic_loader.loadFromDicBytes(allocator, body_bytes) catch |err| {
+        try ew.print("Compile failed: {}\n", .{err});
+        try ew.flush();
+        return error.FetchFailed;
+    };
+    defer bd.deinit();
+
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{dest_path});
     defer allocator.free(tmp_path);
+
     var tmp_created = false;
     defer if (tmp_created) {
         std.fs.cwd().deleteFile(tmp_path) catch {};
     };
 
-    try w.print("Downloading {s}\n", .{url});
-    try w.print("Destination: {s}\n", .{dest_path});
-    try w.flush();
-
-    // Stream response body directly to temp file to avoid buffering in memory
-    var client: std.http.Client = .{ .allocator = allocator };
-    defer client.deinit();
-
-    {
-        const tmp_file = std.fs.cwd().createFile(tmp_path, .{}) catch |err| {
-            try ew.print("Error creating temp file {s}: {}\n", .{ tmp_path, err });
-            try ew.flush();
-            return error.FetchFailed;
-        };
-        defer tmp_file.close();
-        tmp_created = true;
-
-        var write_buf: [65536]u8 = undefined;
-        var file_writer = tmp_file.writer(&write_buf);
-
-        // fetch() streams the response body regardless of HTTP status,
-        // so we check status before flushing to avoid persisting error pages.
-        const result = client.fetch(.{
-            .location = .{ .url = url },
-            .response_writer = &file_writer.interface,
-        }) catch |err| {
-            try ew.print("Download failed: {}. Check your network connection.\n", .{err});
-            try ew.flush();
-            return error.FetchFailed;
-        };
-
-        if (result.status != .ok) {
-            const code = @intFromEnum(result.status);
-            try ew.print("Download failed (HTTP {d}).\n", .{code});
-            if (code >= 500) {
-                try ew.writeAll("The server may be temporarily unavailable. Please try again later.\n");
-            } else if (result.status == .not_found) {
-                try ew.writeAll("The dictionary URL may have changed. Check for updates.\n");
-            }
-            try ew.flush();
-            return error.FetchFailed;
-        }
-
-        file_writer.interface.flush() catch |err| {
-            try ew.print("Error writing downloaded data: {}\n", .{err});
-            try ew.flush();
-            return error.FetchFailed;
-        };
-    }
-
-    // Guard against truncated downloads or HTML error pages served as 200 OK
-    const verify_file = std.fs.cwd().openFile(tmp_path, .{}) catch |err| {
-        try ew.print("Error: cannot open downloaded file: {}\n", .{err});
+    mdict_writer.writeToFile(allocator, &bd, tmp_path) catch |err| {
+        try ew.print("Write failed: {}\n", .{err});
         try ew.flush();
         return error.FetchFailed;
     };
-    defer verify_file.close();
+    tmp_created = true;
 
-    const stat = verify_file.stat() catch |err| {
-        try ew.print("Error: cannot stat downloaded file: {}\n", .{err});
-        try ew.flush();
-        return error.FetchFailed;
-    };
-    if (stat.size < min_valid_size) {
-        try ew.print("Error: downloaded file too small ({d} bytes). Expected > 1 KB.\n", .{stat.size});
-        try ew.flush();
-        return error.FetchFailed;
-    }
-
-    var magic_buf: [2]u8 = undefined;
-    const n = verify_file.read(&magic_buf) catch |err| {
-        try ew.print("Error: cannot read downloaded file: {}\n", .{err});
-        try ew.flush();
-        return error.FetchFailed;
-    };
-    if (n < 2 or magic_buf[0] != 0x1f or magic_buf[1] != 0x8b) {
-        try ew.writeAll("Error: downloaded file is not a valid gzip file.\n");
-        try ew.flush();
-        return error.FetchFailed;
-    }
-
-    // Atomic rename
     std.fs.cwd().rename(tmp_path, dest_path) catch |err| {
-        try ew.print("Error: cannot move file to final location: {}\n", .{err});
+        try ew.print("Rename failed: {}\n", .{err});
         try ew.flush();
         return error.FetchFailed;
     };
-    tmp_created = false; // Rename succeeded, don't delete
+    tmp_created = false;
 
-    const size_kb = @as(f64, @floatFromInt(stat.size)) / 1024.0;
-    try w.print("Done. ({d:.0} KB)\n", .{size_kb});
+    try w.print("Done. ({s})\n", .{dest_path});
     try w.flush();
 }
 
-test "getConfigDictPath returns valid path" {
+test "getConfigMdictPath returns valid path" {
     const allocator = std.testing.allocator;
-    const path = try getConfigDictPath(allocator);
+    const path = try getConfigMdictPath(allocator, "pdbx");
     defer allocator.free(path);
-    try std.testing.expect(std.mem.endsWith(u8, path, "mmcif-dict/mmcif_pdbx.json.gz"));
+    try std.testing.expect(std.mem.endsWith(u8, path, "mmcif-dict/pdbx.mdict"));
 }
 
-test "filenameFromUrl extracts filename" {
-    try std.testing.expectEqualStrings(
-        "dict.json.gz",
-        filenameFromUrl("https://example.com/path/dict.json.gz").?,
-    );
-    try std.testing.expectEqualStrings(
-        "mmcif_ihm_ext.json.gz",
-        filenameFromUrl("https://data.pdbj.org/pdbjplus/dictionaries/mmcif_ihm_ext.json.gz").?,
-    );
-}
-
-test "filenameFromUrl strips query string and fragment" {
-    try std.testing.expectEqualStrings(
-        "dict.json.gz",
-        filenameFromUrl("https://example.com/dict.json.gz?token=abc").?,
-    );
-    try std.testing.expectEqualStrings(
-        "dict.json.gz",
-        filenameFromUrl("https://example.com/dict.json.gz#section").?,
-    );
-}
-
-test "filenameFromUrl returns null for invalid URLs" {
-    try std.testing.expect(filenameFromUrl("https://example.com/") == null);
-    try std.testing.expect(filenameFromUrl("https://example.com") == null);
-    try std.testing.expect(filenameFromUrl("") == null);
-}
-
-test "filenameFromUrl rejects path traversal" {
-    try std.testing.expect(filenameFromUrl("https://evil.com/..%2Fetc") == null);
-    try std.testing.expect(filenameFromUrl("https://evil.com/path/..") == null);
-}
-
-test "filenameFromUrl handles bare path" {
-    try std.testing.expectEqualStrings(
-        "file.gz",
-        filenameFromUrl("/local/path/file.gz").?,
-    );
-}
-
-test "getConfigDictPathForUrl uses URL filename" {
+test "getConfigMdictPath accepts alternate names" {
     const allocator = std.testing.allocator;
-    const path = try getConfigDictPathForUrl(allocator, "https://example.com/my_dict.json.gz");
+    const path = try getConfigMdictPath(allocator, "mmcif_ihm_ext");
     defer allocator.free(path);
-    try std.testing.expect(std.mem.endsWith(u8, path, "mmcif-dict/my_dict.json.gz"));
+    try std.testing.expect(std.mem.endsWith(u8, path, "mmcif-dict/mmcif_ihm_ext.mdict"));
 }
 
-test "getConfigDictPathForUrl falls back to default" {
+test "getConfigMdictPath rejects traversal and invalid names" {
     const allocator = std.testing.allocator;
-    const path = try getConfigDictPathForUrl(allocator, "https://example.com/");
-    defer allocator.free(path);
-    try std.testing.expect(std.mem.endsWith(u8, path, "mmcif-dict/mmcif_pdbx.json.gz"));
+    try std.testing.expectError(error.InvalidName, getConfigMdictPath(allocator, ""));
+    try std.testing.expectError(error.InvalidName, getConfigMdictPath(allocator, "."));
+    try std.testing.expectError(error.InvalidName, getConfigMdictPath(allocator, ".."));
+    try std.testing.expectError(error.InvalidName, getConfigMdictPath(allocator, "../etc"));
+    try std.testing.expectError(error.InvalidName, getConfigMdictPath(allocator, "a/b"));
+    try std.testing.expectError(error.InvalidName, getConfigMdictPath(allocator, "a\\b"));
+    try std.testing.expectError(error.InvalidName, getConfigMdictPath(allocator, ".hidden"));
+}
+
+test "nameFromUrl extracts stem" {
+    try std.testing.expectEqualStrings(
+        "mmcif_pdbx_v50",
+        nameFromUrl("https://mmcif.wwpdb.org/dictionaries/ascii/mmcif_pdbx_v50.dic"),
+    );
+    try std.testing.expectEqualStrings(
+        "mmcif_ihm",
+        nameFromUrl("https://example.com/mmcif_ihm.dic.gz"),
+    );
+    try std.testing.expectEqualStrings(
+        "pdbx",
+        nameFromUrl("https://example.com/"),
+    );
+}
+
+test "nameFromUrl strips query string and fragment" {
+    try std.testing.expectEqualStrings(
+        "mmcif_pdbx_v50",
+        nameFromUrl("https://example.com/mmcif_pdbx_v50.dic?token=abc"),
+    );
+    try std.testing.expectEqualStrings(
+        "mmcif_pdbx_v50",
+        nameFromUrl("https://example.com/mmcif_pdbx_v50.dic#section"),
+    );
+}
+
+test "nameFromUrl falls back to default on empty or hidden stems" {
+    // Empty stem after stripping .dic extension
+    try std.testing.expectEqualStrings("pdbx", nameFromUrl("https://example.com/.dic"));
+    // Hidden stem (leading dot) is rejected by validateName
+    try std.testing.expectEqualStrings("pdbx", nameFromUrl("https://example.com/.hidden.dic"));
 }

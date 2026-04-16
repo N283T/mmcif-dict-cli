@@ -9,7 +9,7 @@ const usage =
     \\Usage: mmcif-dict <command> [options] [arguments]
     \\
     \\Commands:
-    \\  fetch [URL]           Download dictionary to ~/.config/mmcif-dict/
+    \\  fetch [--url URL] [--name NAME]  Download dictionary and compile to cache
     \\  show NAME             Auto-detect category or item and show details
     \\  category [NAME]       List all categories or show details for NAME
     \\  item ITEM_NAME        Show item details (e.g., _atom_site.label_atom_id)
@@ -20,10 +20,11 @@ const usage =
     \\Options:
     \\  --json                Output in JSON format
     \\  --dict PATH           Path to dictionary (.mdict)
+    \\  --name NAME           Select named cache (default: pdbx)
     \\  --help                Show this help
     \\
     \\Environment:
-    \\  MMCIF_DICT_PATH       Default path to dictionary file
+    \\  MMCIF_DICT_PATH       Default path to dictionary file (.mdict)
     \\
 ;
 
@@ -46,6 +47,7 @@ pub fn main() !void {
 
     var format: output.Format = .text;
     var dict_path: ?[]const u8 = null;
+    var dict_name: ?[]const u8 = null;
     var positional: std.ArrayList([]const u8) = .empty;
     defer positional.deinit(gpa);
 
@@ -68,6 +70,16 @@ pub fn main() !void {
             dict_path = args[i];
         } else if (std.mem.startsWith(u8, arg, "--dict=")) {
             dict_path = arg[7..];
+        } else if (std.mem.eql(u8, arg, "--name")) {
+            i += 1;
+            if (i >= args.len) {
+                try ew.writeAll("Error: --name requires an argument\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            dict_name = args[i];
+        } else if (std.mem.startsWith(u8, arg, "--name=")) {
+            dict_name = arg[7..];
         } else {
             try positional.append(gpa, arg);
         }
@@ -82,19 +94,7 @@ pub fn main() !void {
     // Handle fetch command before loading dictionary
     const command = positional.items[0];
     if (std.mem.eql(u8, command, "fetch")) {
-        if (positional.items.len > 2) {
-            try ew.writeAll("Usage: mmcif-dict fetch [URL]\n");
-            try ew.flush();
-            std.process.exit(1);
-        }
-        const url = if (positional.items.len > 1) positional.items[1] else fetch.default_url;
-        fetch.fetchDictionary(gpa, url, w, ew) catch |err| {
-            if (err != error.FetchFailed) {
-                try ew.print("Error: {}\n", .{err});
-                try ew.flush();
-            }
-            std.process.exit(1);
-        };
+        try runFetch(gpa, positional.items[1..], dict_name, w, ew);
         return;
     }
 
@@ -110,43 +110,31 @@ pub fn main() !void {
         return;
     }
 
-    // Resolve dictionary path: --dict > $MMCIF_DICT_PATH > ~/.config/mmcif-dict/ > exe_dir/../data/
+    // Resolve dictionary path: --dict > $MMCIF_DICT_PATH > ~/.config/mmcif-dict/<name>.mdict
     var path_owned = false;
-    const path = dict_path orelse blk: {
-        const env_path = std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH") catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => {
-                // Try ~/.config/mmcif-dict/mmcif_pdbx.json (single alloc, no TOCTOU)
-                const config_path = fetch.getConfigDictPath(gpa) catch {
-                    // Fall through to exe_dir fallback
-                    const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
-                        try ew.writeAll("Error: dictionary not found. Run 'mmcif-dict fetch' to download, or use --dict/MMCIF_DICT_PATH.\n");
-                        try ew.flush();
-                        std.process.exit(1);
-                    };
-                    defer gpa.free(exe_dir);
-                    path_owned = true;
-                    break :blk try std.fmt.allocPrint(gpa, "{s}/../data/mmcif_pdbx.json", .{exe_dir});
-                };
-                if (std.fs.cwd().access(config_path, .{})) |_| {
-                    path_owned = true;
-                    break :blk config_path;
-                } else |_| {
-                    gpa.free(config_path);
-                }
-                // Fall back to exe_dir/../data/mmcif_pdbx.json
-                const exe_dir = std.fs.selfExeDirPathAlloc(gpa) catch {
-                    try ew.writeAll("Error: dictionary not found. Run 'mmcif-dict fetch' to download, or use --dict/MMCIF_DICT_PATH.\n");
-                    try ew.flush();
-                    std.process.exit(1);
-                };
-                defer gpa.free(exe_dir);
-                path_owned = true;
-                break :blk try std.fmt.allocPrint(gpa, "{s}/../data/mmcif_pdbx.json", .{exe_dir});
-            },
+    const name = dict_name orelse fetch.default_name;
+    const path: []const u8 = dict_path orelse blk: {
+        if (std.process.getEnvVarOwned(gpa, "MMCIF_DICT_PATH")) |env_path| {
+            path_owned = true;
+            break :blk env_path;
+        } else |err| switch (err) {
+            error.EnvironmentVariableNotFound => {},
             else => return err,
+        }
+        const config_path = fetch.getConfigMdictPath(gpa, name) catch |err| {
+            try ew.print("Error: invalid dictionary name '{s}': {}\n", .{ name, err });
+            try ew.flush();
+            std.process.exit(1);
         };
-        path_owned = true;
-        break :blk env_path;
+        if (std.fs.cwd().access(config_path, .{})) |_| {
+            path_owned = true;
+            break :blk config_path;
+        } else |_| {
+            gpa.free(config_path);
+        }
+        try ew.print("Error: dictionary cache '{s}' not found. Run 'mmcif-dict fetch --name {s}' or use --dict PATH.\n", .{ name, name });
+        try ew.flush();
+        std.process.exit(1);
     };
     defer if (path_owned) gpa.free(path);
 
@@ -158,7 +146,7 @@ pub fn main() !void {
             try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic -o DICT.mdict' to produce one.\n");
         } else if (err == error.FileNotFound) {
             try ew.print("Error: dictionary not found: {s}\n", .{path});
-            try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic' against a .dic file to produce one.\n");
+            try ew.writeAll("Hint: run 'mmcif-dict fetch' to download, or 'mmcif-dict compile DICT.dic' from a .dic file.\n");
         } else {
             try ew.print("Error loading dictionary from {s}: {}\n", .{ path, err });
         }
@@ -316,6 +304,55 @@ fn runSearch(
     defer gpa.free(results.categories);
     defer gpa.free(results.items);
     try output.printSearchResults(w, cmd_args[0], results, format);
+}
+
+fn runFetch(
+    gpa: std.mem.Allocator,
+    cmd_args: []const []const u8,
+    dict_name: ?[]const u8,
+    w: *std.io.Writer,
+    ew: *std.io.Writer,
+) !void {
+    var url: []const u8 = fetch.default_url;
+    var url_set = false;
+    var i: usize = 0;
+    while (i < cmd_args.len) : (i += 1) {
+        const a = cmd_args[i];
+        if (std.mem.eql(u8, a, "--url")) {
+            i += 1;
+            if (i >= cmd_args.len) {
+                try ew.writeAll("Error: --url requires a URL argument\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            url = cmd_args[i];
+            url_set = true;
+        } else if (std.mem.startsWith(u8, a, "--url=")) {
+            url = a[6..];
+            url_set = true;
+        } else if (std.mem.startsWith(u8, a, "-")) {
+            try ew.print("Unknown flag: {s}\n", .{a});
+            try ew.flush();
+            std.process.exit(1);
+        } else if (!url_set) {
+            // Positional URL (legacy form: `fetch URL`)
+            url = a;
+            url_set = true;
+        } else {
+            try ew.print("Unexpected argument: {s}\n", .{a});
+            try ew.flush();
+            std.process.exit(1);
+        }
+    }
+    // Name priority: --name flag (top-level) > derived from URL > default
+    const name: []const u8 = dict_name orelse (if (url_set) fetch.nameFromUrl(url) else fetch.default_name);
+    fetch.fetchAndCompile(gpa, url, name, w, ew) catch |err| {
+        if (err != error.FetchFailed) {
+            try ew.print("Error: {}\n", .{err});
+            try ew.flush();
+        }
+        std.process.exit(1);
+    };
 }
 
 fn runCompile(
