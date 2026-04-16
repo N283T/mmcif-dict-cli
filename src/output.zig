@@ -94,7 +94,7 @@ pub fn printItem(w: *std.io.Writer, item: dict.Item, opts: Options) !void {
     }
 }
 
-pub fn printRelations(w: *std.io.Writer, category_id: []const u8, rels: []const dict.Relation, opts: Options) !void {
+pub fn printRelations(gpa: std.mem.Allocator, w: *std.io.Writer, category_id: []const u8, rels: []const dict.Relation, opts: Options) !void {
     switch (opts.format) {
         .text => {
             try w.print("Relations for: {s}\n\n", .{category_id});
@@ -103,7 +103,7 @@ pub fn printRelations(w: *std.io.Writer, category_id: []const u8, rels: []const 
                 return;
             }
 
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            var arena = std.heap.ArenaAllocator.init(gpa);
             defer arena.deinit();
             const a = arena.allocator();
 

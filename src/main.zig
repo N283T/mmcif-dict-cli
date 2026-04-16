@@ -332,7 +332,7 @@ fn runRelations(
     }
     const rels = try dictionary.getRelationsForCategory(gpa, cat_name);
     defer gpa.free(rels);
-    try output.printRelations(w, cat_name, rels, opts);
+    try output.printRelations(gpa, w, cat_name, rels, opts);
 }
 
 fn runSearch(
