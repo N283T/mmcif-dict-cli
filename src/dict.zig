@@ -280,3 +280,44 @@ test "extractSnippet" {
     try std.testing.expect(snippet.len > 0);
     try std.testing.expect(containsInsensitive(snippet, "atom_site"));
 }
+
+test "Dictionary.loadFromFile on tiny fixture" {
+    const allocator = std.testing.allocator;
+    var d = try Dictionary.loadFromFile(allocator, "testdata/tiny.mdict");
+    defer d.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), d.categoryCount());
+    const cat = d.getCategory("tiny_cat").?;
+    try std.testing.expectEqualStrings("tiny_cat", cat.id);
+    try std.testing.expectEqualStrings("A tiny category", cat.description);
+
+    const item = d.getItem("_tiny_cat.id").?;
+    try std.testing.expectEqualStrings("int", item.type_code);
+    try std.testing.expectEqualStrings("tiny_cat", item.category_id);
+
+    const rels = try d.getRelationsForCategory(allocator, "tiny_cat");
+    defer allocator.free(rels);
+    try std.testing.expectEqual(@as(usize, 1), rels.len);
+    try std.testing.expectEqualStrings("parent_cat", rels[0].parent_category_id);
+    try std.testing.expectEqualStrings("_tiny_cat.parent_id", rels[0].child_name);
+}
+
+test "Dictionary.getCategory on missing category returns null" {
+    const allocator = std.testing.allocator;
+    var d = try Dictionary.loadFromFile(allocator, "testdata/tiny.mdict");
+    defer d.deinit();
+    try std.testing.expectEqual(@as(?Category, null), d.getCategory("nonexistent"));
+    try std.testing.expectEqual(@as(?Item, null), d.getItem("_not_a_real.item"));
+}
+
+test "Dictionary.searchDescriptions finds matches" {
+    const allocator = std.testing.allocator;
+    var d = try Dictionary.loadFromFile(allocator, "testdata/tiny.mdict");
+    defer d.deinit();
+
+    const results = try d.searchDescriptions(allocator, "tiny");
+    defer allocator.free(results.categories);
+    defer allocator.free(results.items);
+    try std.testing.expectEqual(@as(usize, 1), results.categories.len);
+    try std.testing.expectEqualStrings("tiny_cat", results.categories[0].id);
+}
