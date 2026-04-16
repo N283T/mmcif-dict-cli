@@ -206,7 +206,8 @@ The runtime format is a zero-copy native binary (`.mdict`). Produce one with
 | `--json` | Output in JSON format |
 | `--dict PATH` | Path to dictionary (`.mdict`) |
 | `--name NAME` | Select named cache (default: `pdbx`) |
-| `--help` | Show usage |
+| `--version`, `-V` | Show version and exit |
+| `--help`, `-h` | Show usage |
 
 ## Environment Variables
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const dic_loader = @import("dic_loader.zig");
 const dict = @import("dict.zig");
 const fetch = @import("fetch.zig");
@@ -21,7 +22,8 @@ const usage =
     \\  --json                Output in JSON format
     \\  --dict PATH           Path to dictionary (.mdict)
     \\  --name NAME           Select named cache (default: pdbx)
-    \\  --help                Show this help
+    \\  --version, -V         Show version and exit
+    \\  --help, -h            Show this help
     \\
     \\Environment:
     \\  MMCIF_DICT_PATH       Default path to dictionary file (.mdict)
@@ -58,6 +60,10 @@ pub fn main() !void {
             format = .json;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try w.writeAll(usage);
+            try w.flush();
+            return;
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
+            try w.print("mmcif-dict {s}\n", .{build_options.version});
             try w.flush();
             return;
         } else if (std.mem.eql(u8, arg, "--dict")) {
