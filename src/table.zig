@@ -274,7 +274,6 @@ test "render boxed truncates cells that exceed terminal width" {
 ///   - .boxed: pack items into a column grid that fits terminal_width
 ///   - .tsv:   one item per line with a 2-space indent (legacy format)
 pub fn renderGrid(
-    gpa: std.mem.Allocator,
     w: *std.io.Writer,
     items: []const []const u8,
     opts: Options,
@@ -295,9 +294,9 @@ pub fn renderGrid(
             }
             const col_w = max_len + 2;
             const usable = if (opts.terminal_width >= 2) opts.terminal_width - 2 else 1;
-            var ncols: usize = if (col_w == 0) 1 else usable / col_w;
+            // col_w >= 2 guaranteed (max_len: usize, +2), so division is safe.
+            var ncols: usize = usable / col_w;
             if (ncols == 0) ncols = 1;
-            _ = gpa; // not needed in this simple packer
 
             // Row-major layout: item k -> (k / ncols, k % ncols).
             var idx: usize = 0;
@@ -321,7 +320,6 @@ pub fn renderGrid(
 }
 
 test "renderGrid tsv emits one item per line with 2-space indent" {
-    const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     const file = try tmp_dir.dir.createFile("grid_tsv.txt", .{ .read = true });
@@ -332,7 +330,7 @@ test "renderGrid tsv emits one item per line with 2-space indent" {
     const w = &fw.interface;
 
     const items = [_][]const u8{ "_x.a", "_x.b", "_x.c" };
-    try renderGrid(allocator, w, &items, .{ .style = .tsv });
+    try renderGrid(w, &items, .{ .style = .tsv });
     try w.flush();
 
     try file.seekTo(0);
@@ -342,7 +340,6 @@ test "renderGrid tsv emits one item per line with 2-space indent" {
 }
 
 test "renderGrid boxed packs multiple items per line" {
-    const allocator = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     const file = try tmp_dir.dir.createFile("grid_boxed.txt", .{ .read = true });
@@ -354,7 +351,7 @@ test "renderGrid boxed packs multiple items per line" {
 
     // 6 short items, terminal width 30 -> should fit 3 or more per row.
     const items = [_][]const u8{ "aa", "bb", "cc", "dd", "ee", "ff" };
-    try renderGrid(allocator, w, &items, .{ .style = .boxed, .terminal_width = 30 });
+    try renderGrid(w, &items, .{ .style = .boxed, .terminal_width = 30 });
     try w.flush();
 
     try file.seekTo(0);
