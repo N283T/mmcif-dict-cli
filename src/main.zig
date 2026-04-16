@@ -1,10 +1,7 @@
 const std = @import("std");
-const cif = @import("cif_parser.zig");
 const dic_loader = @import("dic_loader.zig");
 const dict = @import("dict.zig");
-const dict2json = @import("dict2json.zig");
 const fetch = @import("fetch.zig");
-const json_loader = @import("json_loader.zig");
 const mdict_writer = @import("mdict_writer.zig");
 const output = @import("output.zig");
 
@@ -19,11 +16,10 @@ const usage =
     \\  relations CATEGORY    Show parent-child relationships for CATEGORY
     \\  search QUERY          Search descriptions for QUERY
     \\  compile FILE [-o OUT] Compile CIF dictionary to .mdict
-    \\  dict2json FILE        Convert CIF dictionary to PDBj-compatible JSON
     \\
     \\Options:
     \\  --json                Output in JSON format
-    \\  --dict PATH           Path to dictionary (.json or .json.gz)
+    \\  --dict PATH           Path to dictionary (.mdict)
     \\  --help                Show this help
     \\
     \\Environment:
@@ -114,23 +110,6 @@ pub fn main() !void {
         return;
     }
 
-    // Handle dict2json command before loading dictionary
-    if (std.mem.eql(u8, command, "dict2json")) {
-        if (positional.items.len != 2) {
-            try ew.writeAll("Usage: mmcif-dict dict2json FILE\n");
-            try ew.flush();
-            std.process.exit(1);
-        }
-        runDict2Json(gpa, positional.items[1], w, ew) catch |err| {
-            if (err != error.Dict2JsonFailed) {
-                try ew.print("Error: {}\n", .{err});
-                try ew.flush();
-            }
-            std.process.exit(1);
-        };
-        return;
-    }
-
     // Resolve dictionary path: --dict > $MMCIF_DICT_PATH > ~/.config/mmcif-dict/ > exe_dir/../data/
     var path_owned = false;
     const path = dict_path orelse blk: {
@@ -171,13 +150,15 @@ pub fn main() !void {
     };
     defer if (path_owned) gpa.free(path);
 
-    var dictionary = json_loader.loadFromFile(gpa, path) catch |err| {
-        if (err == error.DictionaryCorrupt) {
-            try ew.print("Error: dictionary file appears corrupt: {s}\n", .{path});
-            try ew.writeAll("Hint: Run 'mmcif-dict fetch' to re-download the dictionary.\n");
+    var dictionary = dict.Dictionary.loadFromFile(gpa, path) catch |err| {
+        if (err == error.InvalidMagic or err == error.UnsupportedVersion or err == error.WrongEndian or
+            err == error.TruncatedHeader or err == error.SectionOutOfBounds)
+        {
+            try ew.print("Error: {s} is not a valid .mdict file: {}\n", .{ path, err });
+            try ew.writeAll("Hint: run 'mmcif-dict fetch' or 'mmcif-dict compile' to produce one.\n");
         } else if (err == error.FileNotFound) {
             try ew.print("Error: dictionary not found: {s}\n", .{path});
-            try ew.writeAll("Hint: Run 'mmcif-dict fetch' to download the dictionary.\n");
+            try ew.writeAll("Hint: run 'mmcif-dict fetch' to download the dictionary.\n");
         } else {
             try ew.print("Error loading dictionary from {s}: {}\n", .{ path, err });
         }
@@ -240,18 +221,14 @@ fn runCategory(
     format: output.Format,
 ) !void {
     if (cmd_args.len == 0) {
-        var names: std.ArrayList([]const u8) = .empty;
-        defer names.deinit(gpa);
-        var cat_iter = dictionary.categories.keyIterator();
-        while (cat_iter.next()) |key| {
-            try names.append(gpa, key.*);
-        }
-        std.mem.sort([]const u8, names.items, {}, struct {
+        const names = try dictionary.listCategoryNames(gpa);
+        defer gpa.free(names);
+        std.mem.sort([]const u8, names, {}, struct {
             fn lessThan(_: void, a: []const u8, b: []const u8) bool {
                 return std.mem.order(u8, a, b) == .lt;
             }
         }.lessThan);
-        try output.printCategoryList(w, names.items, format);
+        try output.printCategoryList(w, names, format);
     } else {
         const raw_name = cmd_args[0];
         const cat_name = normalizeCategoryName(raw_name);
@@ -411,58 +388,6 @@ fn runCompile(
     try w.flush();
 }
 
-fn runDict2Json(
-    gpa: std.mem.Allocator,
-    path: []const u8,
-    w: *std.io.Writer,
-    ew: *std.io.Writer,
-) !void {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        try ew.print("Error: cannot open {s}: {}\n", .{ path, err });
-        try ew.flush();
-        return error.Dict2JsonFailed;
-    };
-    defer file.close();
-
-    const stat = file.stat() catch |err| {
-        try ew.print("Error: cannot stat {s}: {}\n", .{ path, err });
-        try ew.flush();
-        return error.Dict2JsonFailed;
-    };
-    const input = gpa.alloc(u8, stat.size) catch {
-        try ew.print("Error: out of memory reading {s}\n", .{path});
-        try ew.flush();
-        return error.Dict2JsonFailed;
-    };
-    defer gpa.free(input);
-
-    const n = file.readAll(input) catch |err| {
-        try ew.print("Error reading {s}: {}\n", .{ path, err });
-        try ew.flush();
-        return error.Dict2JsonFailed;
-    };
-
-    var doc = cif.parse(gpa, input[0..n]) catch |err| {
-        try ew.print("Error parsing CIF {s}: {}\n", .{ path, err });
-        try ew.flush();
-        return error.Dict2JsonFailed;
-    };
-    defer doc.deinit();
-
-    if (doc.blocks.len > 1) {
-        try ew.print("Warning: {d} data blocks found, converting only the first\n", .{doc.blocks.len});
-        try ew.flush();
-    }
-
-    dict2json.convert(gpa, doc, w) catch |err| {
-        try ew.print("Error converting to JSON: {}\n", .{err});
-        try ew.flush();
-        return error.Dict2JsonFailed;
-    };
-
-    try w.flush();
-}
-
 /// Normalize category name: strip leading '_' and trailing '.xxx'
 /// e.g. "_atom_site" -> "atom_site", "_atom_site.entity_id" -> "atom_site"
 fn normalizeCategoryName(raw: []const u8) []const u8 {
@@ -474,9 +399,7 @@ test {
     _ = @import("cif_parser.zig");
     _ = @import("dic_loader.zig");
     _ = @import("dict.zig");
-    _ = @import("dict2json.zig");
     _ = @import("fetch.zig");
-    _ = @import("json_loader.zig");
     _ = @import("mdict_format.zig");
     _ = @import("mdict_reader.zig");
     _ = @import("mdict_writer.zig");
