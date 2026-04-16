@@ -89,8 +89,8 @@ mmcif-dict search "electron density"
 # JSON output (for AI tools / scripts)
 mmcif-dict --json category atom_site
 
-# Convert CIF dictionary to PDBj-compatible JSON
-mmcif-dict dict2json mmcif_pdbx.dic
+# Compile CIF dictionary to native .mdict binary
+mmcif-dict compile mmcif_pdbx.dic -o mmcif_pdbx.mdict
 ```
 
 ## Examples
@@ -180,45 +180,36 @@ Items (31):
   ...
 ```
 
-## Using with gemmi
-
-You can also generate the dictionary JSON using [gemmi](https://gemmi.readthedocs.io/):
-
-```bash
-gemmi convert --to=mmjson mmcif_pdbx.dic mmcif_pdbx.json
-mmcif-dict --dict mmcif_pdbx.json category
-```
-
-Both `dict2json` (built-in) and gemmi produce compatible JSON output.
-
 ## Dictionary Path Resolution
 
 The dictionary file is resolved in this order:
 
-1. `--dict PATH` command-line option (`.json` or `.json.gz`)
+1. `--dict PATH` command-line option (`.mdict`)
 2. `$MMCIF_DICT_PATH` environment variable
-3. `~/.config/mmcif-dict/mmcif_pdbx.json.gz` (installed by `fetch`)
-4. `<exe_dir>/../data/mmcif_pdbx.json` (development fallback)
+3. `~/.config/mmcif-dict/mmcif_pdbx.mdict` (future: installed by `fetch`)
+4. `<exe_dir>/../data/mmcif_pdbx.mdict` (development fallback)
 
-Files ending in `.gz` are decompressed automatically using Zig's native flate implementation.
+The runtime format is a zero-copy native binary (`.mdict`). Produce one with
+`mmcif-dict compile`.
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
 | `--json` | Output in JSON format |
-| `--dict PATH` | Path to dictionary (`.json` or `.json.gz`) |
+| `--dict PATH` | Path to dictionary (`.mdict`) |
 | `--help` | Show usage |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `MMCIF_DICT_PATH` | Default path to `mmcif_pdbx.json` (overrides config/exe-relative lookup) |
+| `MMCIF_DICT_PATH` | Default path to a `.mdict` file (overrides config/exe-relative lookup) |
 
 ## Data Source
 
-Dictionary data from [PDBj](https://pdbj.org/) (`mmcif_pdbx.json.gz`), a JSON representation of the [wwPDB mmCIF PDBx dictionary](http://mmcif.pdb.org/).
+Dictionary data originates from the [wwPDB mmCIF PDBx dictionary](http://mmcif.pdb.org/).
+The `.dic` source can be compiled into `.mdict` via `mmcif-dict compile`.
 
 ## License
 
