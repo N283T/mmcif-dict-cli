@@ -37,9 +37,10 @@ pub fn printCategory(w: *std.io.Writer, cat: dict.Category, opts: Options) !void
             try writeDescription(w, cat.description);
             if (cat.items.len > 0) {
                 try w.print("\nItems ({d}):\n", .{cat.items.len});
-                for (cat.items) |item| {
-                    try w.print("  {s}\n", .{item});
-                }
+                try table.renderGrid(w, cat.items, .{
+                    .style = opts.text_style,
+                    .terminal_width = opts.terminal_width,
+                });
             }
         },
         .json => {
