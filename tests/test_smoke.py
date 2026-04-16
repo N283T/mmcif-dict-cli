@@ -228,6 +228,8 @@ def test_help_mentions_version_flag() -> None:
     r = _run("--help")
     assert r.returncode == 0, r.stderr
     assert "--version" in r.stdout
+    # Guard against someone quietly dropping the short form from usage text.
+    assert "-V" in r.stdout
 
 
 if __name__ == "__main__":
