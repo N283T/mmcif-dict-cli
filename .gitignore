@@ -2,3 +2,7 @@ zig-out/
 zig-cache/
 .zig-cache/
 docs/superpowers/
+tests/__pycache__/
+.pytest_cache/
+result
+.claude/

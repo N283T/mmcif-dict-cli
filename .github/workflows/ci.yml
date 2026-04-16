@@ -7,14 +7,12 @@ on:
       - "*.md"
       - "LICENSE"
       - "docs/**"
-      - "tests/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "*.md"
       - "LICENSE"
       - "docs/**"
-      - "tests/**"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,8 +33,16 @@ jobs:
         with:
           version: 0.15.2
 
+      - uses: astral-sh/setup-uv@v4
+
       - name: Build
         run: zig build
 
-      - name: Test
+      - name: Unit tests
         run: zig build test
+
+      - name: E2E smoke tests (embedded default dict)
+        run: uv run --script tests/test_smoke.py
+
+      - name: E2E compile test
+        run: uv run --script tests/test_compile.py
