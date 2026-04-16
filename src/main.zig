@@ -537,4 +537,5 @@ test {
     _ = @import("mdict_writer.zig");
     _ = @import("output.zig");
     _ = @import("term.zig");
+    _ = @import("table.zig");
 }
