@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- Embedded PDBx dictionary (`@embedFile`) — `mmcif-dict fetch` is now required
+  on first use; binary shrinks from ~3 MB to ~1 MB
+- Two-stage build (`compile_tool` host binary and `data/mmcif_pdbx.dic`)
+
+### Changed
+
+- Dictionary resolution falls through to a clear error message instead of an
+  embedded fallback when no cache is found
+
 ## [0.2.0] - 2026-04-16
 
 ### Added

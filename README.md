@@ -8,7 +8,7 @@
 
 CLI tool for querying mmCIF PDBx dictionary definitions.
 
-Uses PDBj's JSON representation of the mmCIF dictionary for fast lookups of categories, items, and their relationships.
+Provides fast lookups of categories, items, and their relationships from mmCIF PDBx dictionaries.
 
 ## Installation
 

@@ -160,8 +160,14 @@ pub fn main() !void {
         if (std.fs.cwd().access(config_path, .{})) |_| {
             path_owned = true;
             break :blk config_path;
-        } else |_| {
-            gpa.free(config_path);
+        } else |err| {
+            defer gpa.free(config_path);
+            if (err != error.FileNotFound) {
+                try ew.print("Error: cannot access dictionary cache '{s}': {}\n", .{ config_path, err });
+                try ew.writeAll("Check file permissions or remove the file and re-run 'mmcif-dict fetch'.\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
         }
         try ew.print("Error: dictionary '{s}' not found.\n", .{name});
         if (std.mem.eql(u8, name, fetch.default_name)) {

@@ -41,7 +41,7 @@ jobs:
       - name: Unit tests
         run: zig build test
 
-      - name: E2E smoke tests (embedded default dict)
+      - name: E2E smoke tests
         run: uv run --script tests/test_smoke.py
 
       - name: E2E compile test
