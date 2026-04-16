@@ -102,17 +102,32 @@ pub fn printRelations(w: *std.io.Writer, category_id: []const u8, rels: []const 
                 try w.print("  No relations found.\n", .{});
                 return;
             }
-            for (rels) |rel| {
+
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+
+            const row_storage = try a.alloc([3][]const u8, rels.len);
+            const rows = try a.alloc([]const []const u8, rels.len);
+            for (rels, 0..) |rel, i| {
+                // Always show "this category's item" first, then the counterpart.
                 if (std.mem.eql(u8, rel.child_category_id, category_id)) {
-                    try w.print("  {s} -> {s} (parent: {s})\n", .{
-                        rel.child_name, rel.parent_name, rel.parent_category_id,
-                    });
+                    row_storage[i] = .{ rel.child_name, rel.parent_name, rel.parent_category_id };
                 } else {
-                    try w.print("  {s} <- {s} (child: {s})\n", .{
-                        rel.parent_name, rel.child_name, rel.child_category_id,
-                    });
+                    row_storage[i] = .{ rel.parent_name, rel.child_name, rel.child_category_id };
                 }
+                rows[i] = &row_storage[i];
             }
+
+            const cols = [_]table.Column{
+                .{ .header = "Item" },
+                .{ .header = "Related item" },
+                .{ .header = "Related category" },
+            };
+            try table.render(a, w, &cols, rows, .{
+                .style = opts.text_style,
+                .terminal_width = opts.terminal_width,
+            });
         },
         .json => {
             try w.print("{{\"category\":", .{});
