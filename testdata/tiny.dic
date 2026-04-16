@@ -1,0 +1,22 @@
+data_tiny_dic
+save_tiny_cat
+    _category.id            tiny_cat
+    _category.description   'A tiny category'
+    _category.mandatory_code no
+    loop_ _category_key.name '_tiny_cat.id' stop_
+save_
+save__tiny_cat.id
+    _item.name               '_tiny_cat.id'
+    _item.category_id        tiny_cat
+    _item.mandatory_code     yes
+    _item_type.code          int
+    _item_description.description 'Primary key'
+save_
+loop_
+_pdbx_item_linked_group_list.child_category_id
+_pdbx_item_linked_group_list.parent_category_id
+_pdbx_item_linked_group_list.child_name
+_pdbx_item_linked_group_list.parent_name
+_pdbx_item_linked_group_list.link_group_id
+tiny_cat parent_cat '_tiny_cat.parent_id' '_parent_cat.id' 1
+stop_
