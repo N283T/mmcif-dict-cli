@@ -21,7 +21,17 @@ pub fn main() !void {
         std.process.exit(2);
     }
 
-    var bd = try dic_loader.loadFromDicFile(gpa, args[1]);
+    const in = args[1];
+    const out = args[3];
+
+    var bd = dic_loader.loadFromDicFile(gpa, in) catch |err| {
+        std.debug.print("compile_tool: failed to load {s}: {}\n", .{ in, err });
+        std.process.exit(1);
+    };
     defer bd.deinit();
-    try mdict_writer.writeToFile(gpa, &bd, args[3]);
+
+    mdict_writer.writeToFile(gpa, &bd, out) catch |err| {
+        std.debug.print("compile_tool: failed to write {s}: {}\n", .{ out, err });
+        std.process.exit(1);
+    };
 }

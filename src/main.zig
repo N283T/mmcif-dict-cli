@@ -74,7 +74,13 @@ pub fn main() !void {
             }
             dict_path = args[i];
         } else if (std.mem.startsWith(u8, arg, "--dict=")) {
-            dict_path = arg[7..];
+            const v = arg[7..];
+            if (v.len == 0) {
+                try ew.writeAll("Error: --dict= requires a non-empty path\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            dict_path = v;
         } else if (std.mem.eql(u8, arg, "--name")) {
             i += 1;
             if (i >= args.len) {
@@ -84,7 +90,13 @@ pub fn main() !void {
             }
             dict_name = args[i];
         } else if (std.mem.startsWith(u8, arg, "--name=")) {
-            dict_name = arg[7..];
+            const v = arg[7..];
+            if (v.len == 0) {
+                try ew.writeAll("Error: --name= requires a non-empty value\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            dict_name = v;
         } else {
             try positional.append(gpa, arg);
         }
@@ -99,12 +111,22 @@ pub fn main() !void {
     // Handle fetch command before loading dictionary
     const command = positional.items[0];
     if (std.mem.eql(u8, command, "fetch")) {
+        if (dict_path != null) {
+            try ew.writeAll("Error: --dict is a read-only flag and cannot be combined with 'fetch'.\n");
+            try ew.flush();
+            std.process.exit(1);
+        }
         try runFetch(gpa, positional.items[1..], dict_name, w, ew);
         return;
     }
 
     // Handle compile command before loading dictionary
     if (std.mem.eql(u8, command, "compile")) {
+        if (dict_path != null) {
+            try ew.writeAll("Error: --dict is for loading a dictionary and cannot be combined with 'compile'.\n");
+            try ew.flush();
+            std.process.exit(1);
+        }
         runCompile(gpa, positional.items[1..], w, ew) catch |err| {
             if (err != error.CompileFailed) {
                 try ew.print("Error: {}\n", .{err});
@@ -174,7 +196,8 @@ pub fn main() !void {
             std.process.exit(1);
         },
         .embedded => dict.Dictionary.loadFromBuf(gpa, embedded_pdbx) catch |err| {
-            try ew.print("Error: embedded dictionary is invalid: {}\n", .{err});
+            try ew.print("Error: embedded dictionary is invalid ({}).\n", .{err});
+            try ew.writeAll("This indicates a corrupted build. Please rebuild from source or reinstall.\n");
             try ew.flush();
             std.process.exit(1);
         },
@@ -351,10 +374,21 @@ fn runFetch(
                 try ew.flush();
                 std.process.exit(1);
             }
+            if (cmd_args[i].len == 0) {
+                try ew.writeAll("Error: --url requires a non-empty URL\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
             url = cmd_args[i];
             url_set = true;
         } else if (std.mem.startsWith(u8, a, "--url=")) {
-            url = a[6..];
+            const v = a[6..];
+            if (v.len == 0) {
+                try ew.writeAll("Error: --url= requires a non-empty URL\n");
+                try ew.flush();
+                std.process.exit(1);
+            }
+            url = v;
             url_set = true;
         } else if (std.mem.startsWith(u8, a, "-")) {
             try ew.print("Unknown flag: {s}\n", .{a});
@@ -370,8 +404,23 @@ fn runFetch(
             std.process.exit(1);
         }
     }
-    // Name priority: --name flag (top-level) > derived from URL > default
-    const name: []const u8 = dict_name orelse (if (url_set) fetch.nameFromUrl(url) else fetch.default_name);
+    // Name priority: --name flag (top-level) > derived from URL > default.
+    // If derivation fails (invalid basename), warn rather than silently
+    // overwriting the default `pdbx` cache — that surprise would clobber the
+    // user's primary dictionary.
+    const name: []const u8 = name_blk: {
+        if (dict_name) |n| break :name_blk n;
+        if (url_set) {
+            if (fetch.nameFromUrl(url)) |derived| break :name_blk derived;
+            try ew.print(
+                "Warning: cannot derive a safe cache name from URL; using '--name {s}' would overwrite the default cache. Pass --name explicitly.\n",
+                .{fetch.default_name},
+            );
+            try ew.flush();
+            std.process.exit(1);
+        }
+        break :name_blk fetch.default_name;
+    };
     fetch.fetchAndCompile(gpa, url, name, w, ew) catch |err| {
         if (err != error.FetchFailed) {
             try ew.print("Error: {}\n", .{err});
@@ -435,17 +484,38 @@ fn runCompile(
     };
 
     var bd = dic_loader.loadFromDicFile(gpa, in) catch |err| {
-        try ew.print("Error loading {s}: {}\n", .{ in, err });
+        if (err == error.StreamTooLong) {
+            try ew.print("Error loading {s}: file exceeds the 128 MB compile limit.\n", .{in});
+        } else {
+            try ew.print("Error loading {s}: {}\n", .{ in, err });
+        }
         try ew.flush();
         return error.CompileFailed;
     };
     defer bd.deinit();
 
-    mdict_writer.writeToFile(gpa, &bd, out) catch |err| {
-        try ew.print("Error writing {s}: {}\n", .{ out, err });
+    // Write via temp + rename so an interrupted compile doesn't leave a
+    // corrupt .mdict that later `loadFromFile` calls would reject with a
+    // confusing "not a valid .mdict" error.
+    const tmp_out = try std.fmt.allocPrint(gpa, "{s}.tmp", .{out});
+    defer gpa.free(tmp_out);
+    var tmp_exists = true;
+    defer if (tmp_exists) {
+        std.fs.cwd().deleteFile(tmp_out) catch {};
+    };
+
+    mdict_writer.writeToFile(gpa, &bd, tmp_out) catch |err| {
+        try ew.print("Error writing {s}: {}\n", .{ tmp_out, err });
         try ew.flush();
         return error.CompileFailed;
     };
+
+    std.fs.cwd().rename(tmp_out, out) catch |err| {
+        try ew.print("Error renaming {s} -> {s}: {}\n", .{ tmp_out, out, err });
+        try ew.flush();
+        return error.CompileFailed;
+    };
+    tmp_exists = false;
 
     try w.print("Compiled {s} -> {s}\n", .{ in, out });
     try w.flush();
