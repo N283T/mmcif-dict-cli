@@ -1,10 +1,19 @@
 const std = @import("std");
 const dict = @import("dict.zig");
+const table = @import("table.zig");
 
 pub const Format = enum { text, json };
 
-pub fn printCategory(w: *std.io.Writer, cat: dict.Category, format: Format) !void {
-    switch (format) {
+pub const Options = struct {
+    format: Format = .text,
+    /// Text-mode style. Ignored when format == .json.
+    text_style: table.Style = .tsv,
+    /// Terminal width for boxed layouts. Ignored when text_style == .tsv.
+    terminal_width: usize = 80,
+};
+
+pub fn printCategory(w: *std.io.Writer, cat: dict.Category, opts: Options) !void {
+    switch (opts.format) {
         .text => {
             try w.print("Category: {s}\n", .{cat.id});
             try w.print("Mandatory: {s}\n", .{cat.mandatory_code});
@@ -50,8 +59,8 @@ pub fn printCategory(w: *std.io.Writer, cat: dict.Category, format: Format) !voi
     }
 }
 
-pub fn printItem(w: *std.io.Writer, item: dict.Item, format: Format) !void {
-    switch (format) {
+pub fn printItem(w: *std.io.Writer, item: dict.Item, opts: Options) !void {
+    switch (opts.format) {
         .text => {
             try w.print("Item: {s}\n", .{item.name});
             try w.print("Category: {s}\n", .{item.category_id});
@@ -83,8 +92,8 @@ pub fn printItem(w: *std.io.Writer, item: dict.Item, format: Format) !void {
     }
 }
 
-pub fn printRelations(w: *std.io.Writer, category_id: []const u8, rels: []const dict.Relation, format: Format) !void {
-    switch (format) {
+pub fn printRelations(w: *std.io.Writer, category_id: []const u8, rels: []const dict.Relation, opts: Options) !void {
+    switch (opts.format) {
         .text => {
             try w.print("Relations for: {s}\n\n", .{category_id});
             if (rels.len == 0) {
@@ -124,8 +133,8 @@ pub fn printRelations(w: *std.io.Writer, category_id: []const u8, rels: []const 
     }
 }
 
-pub fn printSearchResults(w: *std.io.Writer, query: []const u8, results: dict.SearchResults, format: Format) !void {
-    switch (format) {
+pub fn printSearchResults(w: *std.io.Writer, query: []const u8, results: dict.SearchResults, opts: Options) !void {
+    switch (opts.format) {
         .text => {
             if (results.categories.len > 0) {
                 try w.print("Categories ({d}):\n", .{results.categories.len});
@@ -163,8 +172,8 @@ pub fn printSearchResults(w: *std.io.Writer, query: []const u8, results: dict.Se
     }
 }
 
-pub fn printCategoryList(w: *std.io.Writer, names: []const []const u8, format: Format) !void {
-    switch (format) {
+pub fn printCategoryList(w: *std.io.Writer, names: []const []const u8, opts: Options) !void {
+    switch (opts.format) {
         .text => {
             for (names) |name| {
                 try w.print("{s}\n", .{name});

@@ -47,7 +47,7 @@ pub fn main() !void {
     const w = &stdout_w.interface;
     const ew = &stderr_w.interface;
 
-    var format: output.Format = .text;
+    var opts: output.Options = .{};
     var dict_path: ?[]const u8 = null;
     var dict_name: ?[]const u8 = null;
     var positional: std.ArrayList([]const u8) = .empty;
@@ -57,7 +57,7 @@ pub fn main() !void {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--json")) {
-            format = .json;
+            opts.format = .json;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try w.writeAll(usage);
             try w.flush();
@@ -206,15 +206,15 @@ pub fn main() !void {
     const cmd_args = positional.items[1..];
 
     if (std.mem.eql(u8, command, "show")) {
-        try runShow(gpa, &dictionary, cmd_args, w, ew, format);
+        try runShow(gpa, &dictionary, cmd_args, w, ew, opts);
     } else if (std.mem.eql(u8, command, "category")) {
-        try runCategory(gpa, &dictionary, cmd_args, w, ew, format);
+        try runCategory(gpa, &dictionary, cmd_args, w, ew, opts);
     } else if (std.mem.eql(u8, command, "item")) {
-        try runItem(gpa, &dictionary, cmd_args, w, ew, format);
+        try runItem(gpa, &dictionary, cmd_args, w, ew, opts);
     } else if (std.mem.eql(u8, command, "relations")) {
-        try runRelations(gpa, &dictionary, cmd_args, w, ew, format);
+        try runRelations(gpa, &dictionary, cmd_args, w, ew, opts);
     } else if (std.mem.eql(u8, command, "search")) {
-        try runSearch(gpa, &dictionary, cmd_args, w, ew, format);
+        try runSearch(gpa, &dictionary, cmd_args, w, ew, opts);
     } else {
         try ew.print("Unknown command: {s}\n\n", .{command});
         try ew.writeAll(usage);
@@ -231,7 +231,7 @@ fn runShow(
     cmd_args: []const []const u8,
     w: *std.io.Writer,
     ew: *std.io.Writer,
-    format: output.Format,
+    opts: output.Options,
 ) !void {
     if (cmd_args.len == 0) {
         try ew.writeAll("Usage: mmcif-dict show NAME\n");
@@ -242,9 +242,9 @@ fn runShow(
     const stripped = if (name.len > 0 and name[0] == '_') name[1..] else name;
     // If it contains a dot, treat as item; otherwise as category
     if (std.mem.indexOfScalar(u8, stripped, '.') != null) {
-        try runItem(gpa, dictionary, cmd_args, w, ew, format);
+        try runItem(gpa, dictionary, cmd_args, w, ew, opts);
     } else {
-        try runCategory(gpa, dictionary, cmd_args, w, ew, format);
+        try runCategory(gpa, dictionary, cmd_args, w, ew, opts);
     }
 }
 
@@ -254,7 +254,7 @@ fn runCategory(
     cmd_args: []const []const u8,
     w: *std.io.Writer,
     ew: *std.io.Writer,
-    format: output.Format,
+    opts: output.Options,
 ) !void {
     if (cmd_args.len == 0) {
         const names = try dictionary.listCategoryNames(gpa);
@@ -264,7 +264,7 @@ fn runCategory(
                 return std.mem.order(u8, a, b) == .lt;
             }
         }.lessThan);
-        try output.printCategoryList(w, names, format);
+        try output.printCategoryList(w, names, opts);
     } else {
         const raw_name = cmd_args[0];
         const cat_name = normalizeCategoryName(raw_name);
@@ -278,7 +278,7 @@ fn runCategory(
             try ew.flush();
             std.process.exit(1);
         };
-        try output.printCategory(w, cat, format);
+        try output.printCategory(w, cat, opts);
     }
 }
 
@@ -288,7 +288,7 @@ fn runItem(
     cmd_args: []const []const u8,
     w: *std.io.Writer,
     ew: *std.io.Writer,
-    format: output.Format,
+    opts: output.Options,
 ) !void {
     if (cmd_args.len == 0) {
         try ew.writeAll("Usage: mmcif-dict item ITEM_NAME\n");
@@ -307,7 +307,7 @@ fn runItem(
         try ew.flush();
         std.process.exit(1);
     };
-    try output.printItem(w, item, format);
+    try output.printItem(w, item, opts);
 }
 
 fn runRelations(
@@ -316,7 +316,7 @@ fn runRelations(
     cmd_args: []const []const u8,
     w: *std.io.Writer,
     ew: *std.io.Writer,
-    format: output.Format,
+    opts: output.Options,
 ) !void {
     if (cmd_args.len == 0) {
         try ew.writeAll("Usage: mmcif-dict relations CATEGORY\n");
@@ -332,7 +332,7 @@ fn runRelations(
     }
     const rels = try dictionary.getRelationsForCategory(gpa, cat_name);
     defer gpa.free(rels);
-    try output.printRelations(w, cat_name, rels, format);
+    try output.printRelations(w, cat_name, rels, opts);
 }
 
 fn runSearch(
@@ -341,7 +341,7 @@ fn runSearch(
     cmd_args: []const []const u8,
     w: *std.io.Writer,
     ew: *std.io.Writer,
-    format: output.Format,
+    opts: output.Options,
 ) !void {
     if (cmd_args.len == 0) {
         try ew.writeAll("Usage: mmcif-dict search QUERY\n");
@@ -351,7 +351,7 @@ fn runSearch(
     const results = try dictionary.searchDescriptions(gpa, cmd_args[0]);
     defer gpa.free(results.categories);
     defer gpa.free(results.items);
-    try output.printSearchResults(w, cmd_args[0], results, format);
+    try output.printSearchResults(w, cmd_args[0], results, opts);
 }
 
 fn runFetch(
