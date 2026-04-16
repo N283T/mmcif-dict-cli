@@ -1,4 +1,6 @@
 const std = @import("std");
+const fmt = @import("mdict_format.zig");
+const reader = @import("mdict_reader.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Category = struct {
@@ -35,66 +37,188 @@ pub const SearchResults = struct {
 };
 
 pub const Dictionary = struct {
-    arena: std.heap.ArenaAllocator,
     gpa: Allocator,
-    categories: std.StringHashMap(Category),
-    items: std.StringHashMap(Item),
-    relations: []const Relation,
+    buf: []const u8,
+    owns_buf: bool,
+    view: reader.View,
+    arrays: std.ArrayList([]const []const u8) = .empty,
 
-    pub fn getCategory(self: *const Dictionary, name: []const u8) ?Category {
-        return self.categories.get(name);
+    pub fn loadFromFile(gpa: Allocator, path: []const u8) !Dictionary {
+        const result = try reader.loadFromFile(gpa, path);
+        return .{ .gpa = gpa, .buf = result.buf, .owns_buf = true, .view = result.view };
     }
 
-    pub fn getItem(self: *const Dictionary, name: []const u8) ?Item {
-        return self.items.get(name);
-    }
-
-    pub fn getRelationsForCategory(self: *const Dictionary, allocator: Allocator, category_id: []const u8) ![]const Relation {
-        var results: std.ArrayList(Relation) = .empty;
-        defer results.deinit(allocator);
-        for (self.relations) |rel| {
-            if (std.mem.eql(u8, rel.child_category_id, category_id) or
-                std.mem.eql(u8, rel.parent_category_id, category_id))
-            {
-                try results.append(allocator, rel);
-            }
-        }
-        return results.toOwnedSlice(allocator);
-    }
-
-    pub fn searchDescriptions(self: *const Dictionary, allocator: Allocator, query: []const u8) !SearchResults {
-        var cat_results: std.ArrayList(Category) = .empty;
-        defer cat_results.deinit(allocator);
-        var item_results: std.ArrayList(Item) = .empty;
-        defer item_results.deinit(allocator);
-
-        var cat_iter = self.categories.valueIterator();
-        while (cat_iter.next()) |cat| {
-            if (containsInsensitive(cat.description, query)) {
-                try cat_results.append(allocator, cat.*);
-            }
-        }
-
-        var item_iter = self.items.valueIterator();
-        while (item_iter.next()) |item| {
-            if (containsInsensitive(item.description, query)) {
-                try item_results.append(allocator, item.*);
-            }
-        }
-
-        return .{
-            .categories = try cat_results.toOwnedSlice(allocator),
-            .items = try item_results.toOwnedSlice(allocator),
-        };
+    pub fn loadFromBuf(gpa: Allocator, buf: []const u8) !Dictionary {
+        const v = try reader.load(buf);
+        return .{ .gpa = gpa, .buf = buf, .owns_buf = false, .view = v };
     }
 
     pub fn deinit(self: *Dictionary) void {
-        self.categories.deinit();
-        self.items.deinit();
-        self.gpa.free(self.relations);
-        self.arena.deinit();
+        for (self.arrays.items) |arr| self.gpa.free(arr);
+        self.arrays.deinit(self.gpa);
+        if (self.owns_buf) self.gpa.free(self.buf);
+    }
+
+    pub fn categoryCount(self: *const Dictionary) usize {
+        return self.view.categories.len;
+    }
+
+    pub fn getCategory(self: *Dictionary, name: []const u8) ?Category {
+        const idx = findByKey(self, name, self.view.categories.len, categoryKey) orelse return null;
+        return self.materializeCategory(idx);
+    }
+
+    pub fn getItem(self: *Dictionary, name: []const u8) ?Item {
+        const idx = findByKey(self, name, self.view.items.len, itemKey) orelse return null;
+        return self.materializeItem(idx);
+    }
+
+    pub fn listCategoryNames(self: *const Dictionary, allocator: Allocator) ![][]const u8 {
+        const out = try allocator.alloc([]const u8, self.view.categories.len);
+        for (self.view.categories, 0..) |rec, i| out[i] = self.view.resolveStr(rec.id);
+        return out;
+    }
+
+    pub fn getRelationsForCategory(self: *Dictionary, allocator: Allocator, category_id: []const u8) ![]const Relation {
+        var list: std.ArrayList(Relation) = .empty;
+        errdefer list.deinit(allocator);
+
+        // Relations are sorted by child_category_id; binary search for the first match.
+        const start = lowerBoundKey(self, category_id, self.view.relations.len, relationChildKey);
+        var i: usize = start;
+        while (i < self.view.relations.len) : (i += 1) {
+            const rec = self.view.relations[i];
+            if (!std.mem.eql(u8, self.view.resolveStr(rec.child_category_id), category_id)) break;
+            try list.append(allocator, self.materializeRelation(rec));
+        }
+        // Include rows where this category is the parent (linear scan — rare path).
+        for (self.view.relations) |rec| {
+            if (std.mem.eql(u8, self.view.resolveStr(rec.parent_category_id), category_id) and
+                !std.mem.eql(u8, self.view.resolveStr(rec.child_category_id), category_id))
+            {
+                try list.append(allocator, self.materializeRelation(rec));
+            }
+        }
+        return list.toOwnedSlice(allocator);
+    }
+
+    pub fn searchDescriptions(self: *Dictionary, allocator: Allocator, query: []const u8) !SearchResults {
+        var cats: std.ArrayList(Category) = .empty;
+        errdefer cats.deinit(allocator);
+        var items: std.ArrayList(Item) = .empty;
+        errdefer items.deinit(allocator);
+
+        for (self.view.categories, 0..) |rec, i| {
+            if (containsInsensitive(self.view.resolveStr(rec.description), query)) {
+                try cats.append(allocator, self.materializeCategory(i));
+            }
+        }
+        for (self.view.items, 0..) |rec, i| {
+            if (containsInsensitive(self.view.resolveStr(rec.description), query)) {
+                try items.append(allocator, self.materializeItem(i));
+            }
+        }
+        return .{
+            .categories = try cats.toOwnedSlice(allocator),
+            .items = try items.toOwnedSlice(allocator),
+        };
+    }
+
+    // --- private ---
+
+    fn materializeCategory(self: *Dictionary, idx: usize) Category {
+        const rec = self.view.categories[idx];
+        return .{
+            .id = self.view.resolveStr(rec.id),
+            .description = self.view.resolveStr(rec.description),
+            .mandatory_code = self.view.resolveStr(rec.mandatory_code),
+            .key_names = self.strArrayToSlice(rec.key_names),
+            .group_ids = self.strArrayToSlice(rec.group_ids),
+            .example_details = self.strArrayToSlice(rec.example_details),
+            .example_cases = self.strArrayToSlice(rec.example_cases),
+            .items = self.strArrayToSlice(rec.items),
+        };
+    }
+
+    fn materializeItem(self: *Dictionary, idx: usize) Item {
+        const rec = self.view.items[idx];
+        return .{
+            .name = self.view.resolveStr(rec.name),
+            .category_id = self.view.resolveStr(rec.category_id),
+            .description = self.view.resolveStr(rec.description),
+            .mandatory_code = self.view.resolveStr(rec.mandatory_code),
+            .type_code = self.view.resolveStr(rec.type_code),
+            .enum_values = self.strArrayToSlice(rec.enum_values),
+        };
+    }
+
+    fn materializeRelation(self: *const Dictionary, rec: fmt.RelationRecord) Relation {
+        return .{
+            .child_category_id = self.view.resolveStr(rec.child_category_id),
+            .parent_category_id = self.view.resolveStr(rec.parent_category_id),
+            .child_name = self.view.resolveStr(rec.child_name),
+            .parent_name = self.view.resolveStr(rec.parent_name),
+            .link_group_id = self.view.resolveStr(rec.link_group_id),
+        };
+    }
+
+    /// Allocates `[]const []const u8` on the GPA, stored in `self.arrays`
+    /// and freed on `deinit`. Returns empty slice on OOM (rare).
+    fn strArrayToSlice(self: *Dictionary, ref: fmt.StrArrayRef) []const []const u8 {
+        if (ref.count == 0) return &.{};
+        const out = self.gpa.alloc([]const u8, ref.count) catch return &.{};
+        self.view.resolveStrArray(ref, out);
+        self.arrays.append(self.gpa, out) catch {
+            self.gpa.free(out);
+            return &.{};
+        };
+        return out;
     }
 };
+
+fn categoryKey(d: *const Dictionary, idx: usize) []const u8 {
+    return d.view.resolveStr(d.view.categories[idx].id);
+}
+
+fn itemKey(d: *const Dictionary, idx: usize) []const u8 {
+    return d.view.resolveStr(d.view.items[idx].name);
+}
+
+fn relationChildKey(d: *const Dictionary, idx: usize) []const u8 {
+    return d.view.resolveStr(d.view.relations[idx].child_category_id);
+}
+
+fn findByKey(
+    d: *const Dictionary,
+    needle: []const u8,
+    len: usize,
+    comptime keyFn: fn (*const Dictionary, usize) []const u8,
+) ?usize {
+    var lo: usize = 0;
+    var hi: usize = len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const cmp = std.mem.order(u8, keyFn(d, mid), needle);
+        if (cmp == .eq) return mid;
+        if (cmp == .lt) lo = mid + 1 else hi = mid;
+    }
+    return null;
+}
+
+fn lowerBoundKey(
+    d: *const Dictionary,
+    needle: []const u8,
+    len: usize,
+    comptime keyFn: fn (*const Dictionary, usize) []const u8,
+) usize {
+    var lo: usize = 0;
+    var hi: usize = len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (std.mem.order(u8, keyFn(d, mid), needle) == .lt) lo = mid + 1 else hi = mid;
+    }
+    return lo;
+}
 
 pub fn containsInsensitive(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
