@@ -1,9 +1,11 @@
 const std = @import("std");
 const cif = @import("cif_parser.zig");
+const dic_loader = @import("dic_loader.zig");
 const dict = @import("dict.zig");
 const dict2json = @import("dict2json.zig");
 const fetch = @import("fetch.zig");
 const json_loader = @import("json_loader.zig");
+const mdict_writer = @import("mdict_writer.zig");
 const output = @import("output.zig");
 
 const usage =
@@ -16,6 +18,7 @@ const usage =
     \\  item ITEM_NAME        Show item details (e.g., _atom_site.label_atom_id)
     \\  relations CATEGORY    Show parent-child relationships for CATEGORY
     \\  search QUERY          Search descriptions for QUERY
+    \\  compile FILE [-o OUT] Compile CIF dictionary to .mdict
     \\  dict2json FILE        Convert CIF dictionary to PDBj-compatible JSON
     \\
     \\Options:
@@ -91,6 +94,18 @@ pub fn main() !void {
         const url = if (positional.items.len > 1) positional.items[1] else fetch.default_url;
         fetch.fetchDictionary(gpa, url, w, ew) catch |err| {
             if (err != error.FetchFailed) {
+                try ew.print("Error: {}\n", .{err});
+                try ew.flush();
+            }
+            std.process.exit(1);
+        };
+        return;
+    }
+
+    // Handle compile command before loading dictionary
+    if (std.mem.eql(u8, command, "compile")) {
+        runCompile(gpa, positional.items[1..], w, ew) catch |err| {
+            if (err != error.CompileFailed) {
                 try ew.print("Error: {}\n", .{err});
                 try ew.flush();
             }
@@ -324,6 +339,72 @@ fn runSearch(
     defer gpa.free(results.categories);
     defer gpa.free(results.items);
     try output.printSearchResults(w, cmd_args[0], results, format);
+}
+
+fn runCompile(
+    gpa: std.mem.Allocator,
+    cmd_args: []const []const u8,
+    w: *std.io.Writer,
+    ew: *std.io.Writer,
+) !void {
+    if (cmd_args.len == 0) {
+        try ew.writeAll("Usage: mmcif-dict compile FILE [-o OUT]\n");
+        try ew.flush();
+        return error.CompileFailed;
+    }
+
+    var input_path: ?[]const u8 = null;
+    var output_path: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < cmd_args.len) : (i += 1) {
+        const a = cmd_args[i];
+        if (std.mem.eql(u8, a, "-o")) {
+            i += 1;
+            if (i >= cmd_args.len) {
+                try ew.writeAll("Error: -o requires a path\n");
+                try ew.flush();
+                return error.CompileFailed;
+            }
+            output_path = cmd_args[i];
+        } else if (input_path == null) {
+            input_path = a;
+        } else {
+            try ew.print("Unexpected argument: {s}\n", .{a});
+            try ew.flush();
+            return error.CompileFailed;
+        }
+    }
+
+    const in = input_path orelse {
+        try ew.writeAll("Error: input file required\n");
+        try ew.flush();
+        return error.CompileFailed;
+    };
+
+    var owned_out: ?[]u8 = null;
+    defer if (owned_out) |p| gpa.free(p);
+    const out = output_path orelse blk: {
+        const stem = std.fs.path.stem(in);
+        const p = try std.fmt.allocPrint(gpa, "{s}.mdict", .{stem});
+        owned_out = p;
+        break :blk p;
+    };
+
+    var bd = dic_loader.loadFromDicFile(gpa, in) catch |err| {
+        try ew.print("Error loading {s}: {}\n", .{ in, err });
+        try ew.flush();
+        return error.CompileFailed;
+    };
+    defer bd.deinit();
+
+    mdict_writer.writeToFile(gpa, &bd, out) catch |err| {
+        try ew.print("Error writing {s}: {}\n", .{ out, err });
+        try ew.flush();
+        return error.CompileFailed;
+    };
+
+    try w.print("Compiled {s} -> {s}\n", .{ in, out });
+    try w.flush();
 }
 
 fn runDict2Json(
