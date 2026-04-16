@@ -150,26 +150,45 @@ pub fn printRelations(gpa: std.mem.Allocator, w: *std.io.Writer, category_id: []
     }
 }
 
-pub fn printSearchResults(w: *std.io.Writer, query: []const u8, results: dict.SearchResults, opts: Options) !void {
+pub fn printSearchResults(gpa: std.mem.Allocator, w: *std.io.Writer, query: []const u8, results: dict.SearchResults, opts: Options) !void {
     switch (opts.format) {
         .text => {
-            if (results.categories.len > 0) {
-                try w.print("Categories ({d}):\n", .{results.categories.len});
-                for (results.categories) |cat| {
-                    const snippet = dict.extractSnippet(cat.description, query, 40);
-                    try w.print("  {s}\n    ...{s}...\n", .{ cat.id, snippet });
-                }
-            }
-            if (results.items.len > 0) {
-                try w.print("\nItems ({d}):\n", .{results.items.len});
-                for (results.items) |item| {
-                    const snippet = dict.extractSnippet(item.description, query, 40);
-                    try w.print("  {s}\n    ...{s}...\n", .{ item.name, snippet });
-                }
-            }
             if (results.categories.len == 0 and results.items.len == 0) {
                 try w.print("No results found.\n", .{});
+                return;
             }
+
+            var arena = std.heap.ArenaAllocator.init(gpa);
+            defer arena.deinit();
+            const a = arena.allocator();
+
+            const total = results.categories.len + results.items.len;
+            const row_storage = try a.alloc([3][]const u8, total);
+            const rows = try a.alloc([]const []const u8, total);
+            var idx: usize = 0;
+
+            for (results.categories) |cat| {
+                const snippet = dict.extractSnippet(cat.description, query, 40);
+                row_storage[idx] = .{ "category", cat.id, snippet };
+                rows[idx] = &row_storage[idx];
+                idx += 1;
+            }
+            for (results.items) |item| {
+                const snippet = dict.extractSnippet(item.description, query, 40);
+                row_storage[idx] = .{ "item", item.name, snippet };
+                rows[idx] = &row_storage[idx];
+                idx += 1;
+            }
+
+            const cols = [_]table.Column{
+                .{ .header = "Kind" },
+                .{ .header = "Name" },
+                .{ .header = "Match" },
+            };
+            try table.render(a, w, &cols, rows, .{
+                .style = opts.text_style,
+                .terminal_width = opts.terminal_width,
+            });
         },
         .json => {
             try w.print("{{\"query\":", .{});

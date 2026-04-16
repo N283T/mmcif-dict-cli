@@ -351,7 +351,7 @@ fn runSearch(
     const results = try dictionary.searchDescriptions(gpa, cmd_args[0]);
     defer gpa.free(results.categories);
     defer gpa.free(results.items);
-    try output.printSearchResults(w, cmd_args[0], results, opts);
+    try output.printSearchResults(gpa, w, cmd_args[0], results, opts);
 }
 
 fn runFetch(
