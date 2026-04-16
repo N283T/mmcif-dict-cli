@@ -1,0 +1,88 @@
+##############
+# minimal.dic
+# A minimal CIF dictionary for testing compile/load round-trips.
+##############
+data_minimal_test_dict
+
+    _datablock.id          minimal_test_dict
+    _datablock.description 'Minimal test dictionary'
+    _dictionary.title      minimal_test_dict
+    _dictionary.version    0.0.1
+
+save_test_category
+
+    _category.id               test_category
+    _category.description
+;
+A test category for unit testing.
+;
+    _category.mandatory_code   no
+    _category_key.name         '_test_category.id'
+    _category_group.id         'inclusive_group'
+
+save_
+
+save__test_category.id
+
+    _item.name                 '_test_category.id'
+    _item.category_id          test_category
+    _item.mandatory_code       yes
+    _item_description.description
+;
+Unique identifier for the test category.
+;
+    _item_type.code            code
+
+save_
+
+save__test_category.value
+
+    _item.name                 '_test_category.value'
+    _item.category_id          test_category
+    _item.mandatory_code       no
+    _item_description.description
+;
+A numeric value for testing.
+;
+    _item_type.code            float
+
+save_
+
+save_another_category
+
+    _category.id               another_category
+    _category.description
+;
+A second test category to verify multi-category handling.
+;
+    _category.mandatory_code   no
+    _category_key.name         '_another_category.id'
+    _category_group.id         'inclusive_group'
+
+save_
+
+save__another_category.id
+
+    _item.name                 '_another_category.id'
+    _item.category_id          another_category
+    _item.mandatory_code       yes
+    _item_description.description
+;
+Unique identifier.
+;
+    _item_type.code            code
+
+save_
+
+save__another_category.label
+
+    _item.name                 '_another_category.label'
+    _item.category_id          another_category
+    _item.mandatory_code       no
+    _item_description.description
+;
+A text label.
+;
+    _item_type.code            text
+
+save_

@@ -212,7 +212,7 @@ The runtime format is a zero-copy native binary (`.mdict`). Produce one with
 
 | Variable | Description |
 |----------|-------------|
-| `MMCIF_DICT_PATH` | Default path to a `.mdict` file (overrides named-cache lookup and the embedded default) |
+| `MMCIF_DICT_PATH` | Default path to a `.mdict` file (overrides named-cache lookup) |
 
 ## Data Source
 
