@@ -158,20 +158,16 @@ CHEM_COMP_ATOM category.
 ### Relations
 
 ```
-$ mmcif-dict relations atom_site
+$ mmcif-dict relations atom_site | head -8
 Relations for: atom_site
 
-┌──────────────────────────┬──────────────────────────────────┬──────────────────────┐
-│ Item                     │ Related item                     │ Related category     │
-├──────────────────────────┼──────────────────────────────────┼──────────────────────┤
-│ _atom_site.auth_asym_id  │ _pdbx_poly_seq_scheme.pdb_strand_id │ pdbx_poly_seq_scheme │
-│ _atom_site.auth_comp_id  │ _pdbx_poly_seq_scheme.pdb_mon_id  │ pdbx_poly_seq_scheme │
-...
-└──────────────────────────┴──────────────────────────────────┴──────────────────────┘
+  _atom_site.label_asym_id <- _pdbx_branch_scheme.asym_id (child: pdbx_branch_scheme)
+  _atom_site.label_comp_id <- _pdbx_branch_scheme.mon_id (child: pdbx_branch_scheme)
+  _atom_site.auth_comp_id <- _pdbx_branch_scheme.pdb_mon_id (child: pdbx_branch_scheme)
+  _atom_site.auth_seq_id <- _pdbx_branch_scheme.pdb_seq_num (child: pdbx_branch_scheme)
+  _atom_site.pdbx_PDB_ins_code <- _pdbx_branch_scheme.pdb_ins_code (child: pdbx_branch_scheme)
+  _atom_site.auth_asym_id <- _pdbx_branch_scheme.pdb_asym_id (child: pdbx_branch_scheme)
 ```
-
-When piped or with `--no-table`, output is tab-separated for easy
-`grep`/`awk` use.
 
 ### Search
 
@@ -210,7 +206,6 @@ The runtime format is a zero-copy native binary (`.mdict`). Produce one with
 | `--json` | Output in JSON format |
 | `--dict PATH` | Path to dictionary (`.mdict`) |
 | `--name NAME` | Select named cache (default: `pdbx`) |
-| `--no-table` | Force plain tab-separated output (no box drawing) |
 | `--version`, `-V` | Show version and exit |
 | `--help`, `-h` | Show usage |
 
