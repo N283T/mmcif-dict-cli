@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -261,6 +262,7 @@ def test_search_tsv_shape() -> None:
         for ln in r.stdout.splitlines()
         if ln.strip() and not ln.startswith("No results")
     ]
+    assert data_lines, "search returned no results — fixture may have changed"
     # Every data line (including header) has at least 2 tabs.
     for ln in data_lines:
         assert ln.count("\t") >= 2, f"expected 3 columns, got {ln!r}"
@@ -269,8 +271,11 @@ def test_search_tsv_shape() -> None:
 def test_category_items_tsv_one_per_line() -> None:
     r = _run_with_dict("category", "test_category")
     assert r.returncode == 0, r.stderr
-    items_section = r.stdout.split("Items (", 1)[1]
-    # Every non-empty line under Items should start with 2 spaces + _
+    parts = r.stdout.split("Items (", 1)
+    assert len(parts) == 2, "Items section not found in output"
+    items_section = parts[1]
+    # mmCIF item names start with `_category.name`; legacy formatter
+    # indents each name with 2 spaces in tsv mode.
     for ln in items_section.splitlines()[1:]:
         if not ln.strip():
             continue
@@ -290,6 +295,7 @@ def test_json_output_unchanged_by_table_flag() -> None:
     assert r1.stdout == r2.stdout
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="pty.fork is POSIX-only")
 def test_relations_boxed_on_fake_tty() -> None:
     # Force a tty via pty to exercise the boxed branch.
     import pty
@@ -297,11 +303,21 @@ def test_relations_boxed_on_fake_tty() -> None:
     assert _compiled_mdict is not None, "fixture not initialised"
     pid, fd = pty.fork()
     if pid == 0:
-        os.execvpe(
-            str(BINARY),
-            [str(BINARY), "--dict", str(_compiled_mdict), "relations", "test_category"],
-            _isolated_env(),
-        )
+        try:
+            os.execvpe(
+                str(BINARY),
+                [
+                    str(BINARY),
+                    "--dict",
+                    str(_compiled_mdict),
+                    "relations",
+                    "test_category",
+                ],
+                _isolated_env(),
+            )
+        except Exception:
+            os._exit(1)
+        os._exit(1)  # execvpe only returns on failure
     # Parent: read until EOF.
     chunks: list[bytes] = []
     try:
