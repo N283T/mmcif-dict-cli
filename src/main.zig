@@ -155,10 +155,10 @@ pub fn main() !void {
             err == error.TruncatedHeader or err == error.SectionOutOfBounds)
         {
             try ew.print("Error: {s} is not a valid .mdict file: {}\n", .{ path, err });
-            try ew.writeAll("Hint: run 'mmcif-dict fetch' or 'mmcif-dict compile' to produce one.\n");
+            try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic -o DICT.mdict' to produce one.\n");
         } else if (err == error.FileNotFound) {
             try ew.print("Error: dictionary not found: {s}\n", .{path});
-            try ew.writeAll("Hint: run 'mmcif-dict fetch' to download the dictionary.\n");
+            try ew.writeAll("Hint: run 'mmcif-dict compile DICT.dic' against a .dic file to produce one.\n");
         } else {
             try ew.print("Error loading dictionary from {s}: {}\n", .{ path, err });
         }
@@ -237,7 +237,7 @@ fn runCategory(
             try ew.flush();
             std.process.exit(1);
         }
-        const cat = dictionary.getCategory(cat_name) orelse {
+        const cat = (try dictionary.getCategory(cat_name)) orelse {
             try ew.print("Category not found: {s}\n", .{raw_name});
             try ew.flush();
             std.process.exit(1);
@@ -266,7 +266,7 @@ fn runItem(
         name_owned = true;
     }
     defer if (name_owned) gpa.free(name);
-    const item = dictionary.getItem(name) orelse {
+    const item = (try dictionary.getItem(name)) orelse {
         try ew.print("Item not found: {s}\n", .{name});
         try ew.flush();
         std.process.exit(1);

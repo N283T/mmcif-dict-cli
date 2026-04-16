@@ -63,14 +63,14 @@ pub const Dictionary = struct {
         return self.view.categories.len;
     }
 
-    pub fn getCategory(self: *Dictionary, name: []const u8) ?Category {
+    pub fn getCategory(self: *Dictionary, name: []const u8) !?Category {
         const idx = findByKey(self, name, self.view.categories.len, categoryKey) orelse return null;
-        return self.materializeCategory(idx);
+        return try self.materializeCategory(idx);
     }
 
-    pub fn getItem(self: *Dictionary, name: []const u8) ?Item {
+    pub fn getItem(self: *Dictionary, name: []const u8) !?Item {
         const idx = findByKey(self, name, self.view.items.len, itemKey) orelse return null;
-        return self.materializeItem(idx);
+        return try self.materializeItem(idx);
     }
 
     pub fn listCategoryNames(self: *const Dictionary, allocator: Allocator) ![][]const u8 {
@@ -110,12 +110,12 @@ pub const Dictionary = struct {
 
         for (self.view.categories, 0..) |rec, i| {
             if (containsInsensitive(self.view.resolveStr(rec.description), query)) {
-                try cats.append(allocator, self.materializeCategory(i));
+                try cats.append(allocator, try self.materializeCategory(i));
             }
         }
         for (self.view.items, 0..) |rec, i| {
             if (containsInsensitive(self.view.resolveStr(rec.description), query)) {
-                try items.append(allocator, self.materializeItem(i));
+                try items.append(allocator, try self.materializeItem(i));
             }
         }
         return .{
@@ -126,21 +126,21 @@ pub const Dictionary = struct {
 
     // --- private ---
 
-    fn materializeCategory(self: *Dictionary, idx: usize) Category {
+    fn materializeCategory(self: *Dictionary, idx: usize) !Category {
         const rec = self.view.categories[idx];
         return .{
             .id = self.view.resolveStr(rec.id),
             .description = self.view.resolveStr(rec.description),
             .mandatory_code = self.view.resolveStr(rec.mandatory_code),
-            .key_names = self.strArrayToSlice(rec.key_names),
-            .group_ids = self.strArrayToSlice(rec.group_ids),
-            .example_details = self.strArrayToSlice(rec.example_details),
-            .example_cases = self.strArrayToSlice(rec.example_cases),
-            .items = self.strArrayToSlice(rec.items),
+            .key_names = try self.strArrayToSlice(rec.key_names),
+            .group_ids = try self.strArrayToSlice(rec.group_ids),
+            .example_details = try self.strArrayToSlice(rec.example_details),
+            .example_cases = try self.strArrayToSlice(rec.example_cases),
+            .items = try self.strArrayToSlice(rec.items),
         };
     }
 
-    fn materializeItem(self: *Dictionary, idx: usize) Item {
+    fn materializeItem(self: *Dictionary, idx: usize) !Item {
         const rec = self.view.items[idx];
         return .{
             .name = self.view.resolveStr(rec.name),
@@ -148,7 +148,7 @@ pub const Dictionary = struct {
             .description = self.view.resolveStr(rec.description),
             .mandatory_code = self.view.resolveStr(rec.mandatory_code),
             .type_code = self.view.resolveStr(rec.type_code),
-            .enum_values = self.strArrayToSlice(rec.enum_values),
+            .enum_values = try self.strArrayToSlice(rec.enum_values),
         };
     }
 
@@ -163,15 +163,15 @@ pub const Dictionary = struct {
     }
 
     /// Allocates `[]const []const u8` on the GPA, stored in `self.arrays`
-    /// and freed on `deinit`. Returns empty slice on OOM (rare).
-    fn strArrayToSlice(self: *Dictionary, ref: fmt.StrArrayRef) []const []const u8 {
+    /// and freed on `deinit`. Propagates OOM to the caller rather than
+    /// returning an empty slice silently (which would misreport data as
+    /// missing).
+    fn strArrayToSlice(self: *Dictionary, ref: fmt.StrArrayRef) ![]const []const u8 {
         if (ref.count == 0) return &.{};
-        const out = self.gpa.alloc([]const u8, ref.count) catch return &.{};
+        const out = try self.gpa.alloc([]const u8, ref.count);
+        errdefer self.gpa.free(out);
         self.view.resolveStrArray(ref, out);
-        self.arrays.append(self.gpa, out) catch {
-            self.gpa.free(out);
-            return &.{};
-        };
+        try self.arrays.append(self.gpa, out);
         return out;
     }
 };
@@ -287,11 +287,11 @@ test "Dictionary.loadFromFile on tiny fixture" {
     defer d.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), d.categoryCount());
-    const cat = d.getCategory("tiny_cat").?;
+    const cat = (try d.getCategory("tiny_cat")).?;
     try std.testing.expectEqualStrings("tiny_cat", cat.id);
     try std.testing.expectEqualStrings("A tiny category", cat.description);
 
-    const item = d.getItem("_tiny_cat.id").?;
+    const item = (try d.getItem("_tiny_cat.id")).?;
     try std.testing.expectEqualStrings("int", item.type_code);
     try std.testing.expectEqualStrings("tiny_cat", item.category_id);
 
@@ -306,8 +306,8 @@ test "Dictionary.getCategory on missing category returns null" {
     const allocator = std.testing.allocator;
     var d = try Dictionary.loadFromFile(allocator, "testdata/tiny.mdict");
     defer d.deinit();
-    try std.testing.expectEqual(@as(?Category, null), d.getCategory("nonexistent"));
-    try std.testing.expectEqual(@as(?Item, null), d.getItem("_not_a_real.item"));
+    try std.testing.expectEqual(@as(?Category, null), try d.getCategory("nonexistent"));
+    try std.testing.expectEqual(@as(?Item, null), try d.getItem("_not_a_real.item"));
 }
 
 test "Dictionary.searchDescriptions finds matches" {

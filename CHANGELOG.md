@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `compile` command: convert CIF `.dic` dictionary files to native `.mdict` binary format
+- Native `.mdict` binary format (zero-copy, sorted records, binary-search lookups)
+
+### Changed
+
+- **Breaking**: `--dict` and `MMCIF_DICT_PATH` now accept `.mdict` only (previously `.json` / `.json.gz`)
+- Runtime dictionary loader rewritten to use zero-copy view over `.mdict` buffer instead of arena + HashMap
+
+### Removed
+
+- **Breaking**: `dict2json` subcommand
+- JSON-based dictionary loader (`std.json` dependency)
+- PDBj JSON fixtures and test data
+
 ## [0.1.1] - 2025-03-11
 
 ### Added
