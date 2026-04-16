@@ -7,11 +7,13 @@
 //! UTF-8 byte boundaries in boxed mode. The only multi-byte character
 //! emitted by this module is the "…" ellipsis appended by truncation.
 //!
-//! The proportional shrink in `renderBoxed` clamps each column to a
-//! minimum of 1 character. When a very narrow budget combines with many
-//! columns, the final table can exceed `terminal_width`. This is
-//! acceptable for mmCIF output (2–3 columns of moderate width) but
-//! would need a second-pass correction for wider use.
+//! The proportional shrink in `renderBoxed` uses integer division and
+//! clamps each column to a minimum of 1 character. The result is that
+//! the rendered table is typically slightly narrower than
+//! `terminal_width` (up to `ncols - 1` chars of truncation loss); it
+//! does not overshoot. This is acceptable for mmCIF output (2–3 columns
+//! of moderate width). A second-pass correction that distributes the
+//! rounding remainder would tighten the fit for wider tables.
 
 const std = @import("std");
 
@@ -173,14 +175,19 @@ fn writeCell(w: *std.io.Writer, cell: []const u8, wid: usize, alignment: Align) 
             },
         }
     } else {
-        // Truncate with "…" (3 bytes UTF-8).
+        // Truncate. "…" is 3 UTF-8 bytes; reserve 3 bytes of the slot for
+        // it when the slot is wide enough (wid >= 4). For narrower slots,
+        // use a 1-byte ASCII ">" fallback so the rendered byte count
+        // matches the column width and the table stays aligned.
         if (wid == 0) return;
-        if (wid == 1) {
+        if (wid >= 4) {
+            try w.writeAll(cell[0 .. wid - 3]);
             try w.writeAll("…");
-            return;
+        } else {
+            // wid in {1, 2, 3}: 1-byte marker.
+            try w.writeAll(cell[0 .. wid - 1]);
+            try w.writeByte('>');
         }
-        try w.writeAll(cell[0 .. wid - 1]);
-        try w.writeAll("…");
     }
 }
 
@@ -268,6 +275,37 @@ test "render boxed truncates cells that exceed terminal width" {
     var out: [512]u8 = undefined;
     const n = try file.readAll(&out);
     try std.testing.expect(std.mem.indexOf(u8, out[0..n], "…") != null);
+}
+
+test "render boxed narrow column uses ASCII fallback" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("narrow.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [1024]u8 = undefined;
+    var fw = file.writer(&buf);
+    const w = &fw.interface;
+
+    const cols = [_]Column{
+        .{ .header = "H" },
+    };
+    // Terminal width small enough that the column shrinks below 4 chars.
+    // chrome = 1 + 1*3 = 4, budget = 5-4 = 1. Natural width = 10. Scaled = 0 → clamped to 1.
+    const long = [_][]const u8{"abcdefghij"};
+    const rows = [_][]const []const u8{&long};
+
+    try render(allocator, w, &cols, &rows, .{ .style = .boxed, .terminal_width = 5 });
+    try w.flush();
+
+    try file.seekTo(0);
+    var out: [512]u8 = undefined;
+    const n = try file.readAll(&out);
+    const result = out[0..n];
+    // ASCII ">" appears; "…" does NOT (would overflow).
+    try std.testing.expect(std.mem.indexOf(u8, result, ">") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "…") == null);
 }
 
 /// Render a single-column list in one of two shapes:
