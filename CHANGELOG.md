@@ -7,20 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-16
+
 ### Added
 
 - `compile` command: convert CIF `.dic` dictionary files to native `.mdict` binary format
 - Native `.mdict` binary format (zero-copy, sorted records, binary-search lookups)
+- `fetch` now downloads `.dic` files from wwPDB and compiles them in-process
+  into `.mdict` (no separate decompression step)
+- `--name NAME` flag selects a named cache under `~/.config/mmcif-dict/<name>.mdict`
+  (default `pdbx`); enables co-existing IHM, CIF core, and other dictionaries
+- Default PDBx dictionary is embedded in the binary via `@embedFile` so
+  `mmcif-dict category atom_site` works out of the box with no `fetch` step
+- Two-stage build: a host-target `compile_tool` pre-compiles `data/mmcif_pdbx.dic`
+  into the `.mdict` the main binary embeds
+- E2E smoke tests (`tests/test_smoke.py`) run in CI
 
 ### Changed
 
 - **Breaking**: `--dict` and `MMCIF_DICT_PATH` now accept `.mdict` only (previously `.json` / `.json.gz`)
 - Runtime dictionary loader rewritten to use zero-copy view over `.mdict` buffer instead of arena + HashMap
+- Fetch error messages now distinguish DNS / TLS / redirect / network / protocol failures and sniff HTML/XML/JSON responses for clearer diagnostics
+- Cache names validated against a strict `[A-Za-z0-9_-]{1,64}` allowlist
 
 ### Removed
 
-- **Breaking**: `dict2json` subcommand
-- JSON-based dictionary loader (`std.json` dependency)
+- **Breaking**: `dict2json` subcommand (use `gemmi convert` if you need PDBj-style JSON)
+- **Breaking**: PDBj JSON dictionaries are no longer a supported input format; users must re-run `mmcif-dict fetch` or `mmcif-dict compile` to migrate existing caches
+- JSON-based dictionary loader and `std.json` dependency
 - PDBj JSON fixtures and test data
 
 ## [0.1.1] - 2025-03-11
