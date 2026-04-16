@@ -7,13 +7,12 @@
 //! UTF-8 byte boundaries in boxed mode. The only multi-byte character
 //! emitted by this module is the "…" ellipsis appended by truncation.
 //!
-//! The proportional shrink in `renderBoxed` uses integer division and
-//! clamps each column to a minimum of 1 character. The result is that
-//! the rendered table is typically slightly narrower than
-//! `terminal_width` (up to `ncols - 1` chars of truncation loss); it
-//! does not overshoot. This is acceptable for mmCIF output (2–3 columns
-//! of moderate width). A second-pass correction that distributes the
-//! rounding remainder would tighten the fit for wider tables.
+//! The `renderBoxed` shrink is greedy: when the natural widths exceed
+//! `terminal_width`, the currently-widest column is trimmed by 1 char
+//! repeatedly until the total fits. Columns never go below 1 char.
+//! Per-column `max_width` caps are applied before shrink, so narrow
+//! columns like `Kind` (≤ 10 chars) stay full-width even when paired
+//! with a very long description column.
 
 const std = @import("std");
 
@@ -22,6 +21,8 @@ pub const Align = enum { left, right };
 pub const Column = struct {
     header: []const u8,
     @"align": Align = .left,
+    /// Maximum column width in characters. 0 means no cap.
+    max_width: usize = 0,
 };
 
 pub const Style = enum { boxed, tsv };
@@ -82,18 +83,29 @@ fn renderBoxed(
             if (i < widths.len and cell.len > widths[i]) widths[i] = cell.len;
         }
     }
+    // Apply per-column caps before the shrink.
+    for (cols, 0..) |c, i| {
+        if (c.max_width > 0 and widths[i] > c.max_width) widths[i] = c.max_width;
+    }
 
-    // 2. If total > terminal width, shrink proportionally (min 1 per col).
+    // 2. If total > terminal width, shrink greedily (largest column first, min 1 per col).
     // Chrome = 1 leading "│" + N * (1 pad + 1 trailing "│") + per-col (1 pad)
     //        = 1 + N*3; "│ cell │ cell │" layout.
     const chrome: usize = 1 + cols.len * 3;
     var total_content: usize = 0;
     for (widths) |x| total_content += x;
     const budget: usize = if (terminal_width > chrome) terminal_width - chrome else 0;
+    // Greedy shrink: repeatedly trim 1 char from the currently-widest column
+    // until the total fits within the budget. Always leave >= 1 char per col.
     if (budget > 0 and total_content > budget) {
-        for (widths) |*x| {
-            const scaled = (x.* * budget) / total_content;
-            x.* = if (scaled == 0) 1 else scaled;
+        while (total_content > budget) {
+            var max_idx: usize = 0;
+            for (widths, 0..) |wid, i| {
+                if (wid > widths[max_idx]) max_idx = i;
+            }
+            if (widths[max_idx] <= 1) break; // can't shrink any further
+            widths[max_idx] -= 1;
+            total_content -= 1;
         }
     }
 
@@ -306,6 +318,66 @@ test "render boxed narrow column uses ASCII fallback" {
     // ASCII ">" appears; "…" does NOT (would overflow).
     try std.testing.expect(std.mem.indexOf(u8, result, ">") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "…") == null);
+}
+
+test "render boxed respects Column.max_width cap" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("maxw.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var fw = file.writer(&buf);
+    const w = &fw.interface;
+
+    const cols = [_]Column{
+        .{ .header = "K", .max_width = 4 },
+        .{ .header = "V" },
+    };
+    const row = [_][]const u8{ "longcell", "other" };
+    const rows = [_][]const []const u8{&row};
+
+    try render(allocator, w, &cols, &rows, .{ .style = .boxed, .terminal_width = 80 });
+    try w.flush();
+
+    try file.seekTo(0);
+    var out: [512]u8 = undefined;
+    const n = try file.readAll(&out);
+    // "longcell" (8 chars) should be truncated to fit 4-wide column.
+    try std.testing.expect(std.mem.indexOf(u8, out[0..n], "longcell") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out[0..n], "…") != null);
+}
+
+test "render boxed greedy shrink preserves narrow columns" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("greedy.txt", .{ .read = true });
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var fw = file.writer(&buf);
+    const w = &fw.interface;
+
+    const cols = [_]Column{
+        .{ .header = "A" }, // Short header.
+        .{ .header = "B" },
+    };
+    // Column A is short content; column B is long content. Terminal too narrow.
+    const row = [_][]const u8{ "ok", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+    const rows = [_][]const []const u8{&row};
+
+    try render(allocator, w, &cols, &rows, .{ .style = .boxed, .terminal_width = 20 });
+    try w.flush();
+
+    try file.seekTo(0);
+    var out: [512]u8 = undefined;
+    const n = try file.readAll(&out);
+    // Column A's content "ok" should be fully rendered (not truncated).
+    // Column B should be truncated.
+    try std.testing.expect(std.mem.indexOf(u8, out[0..n], "ok") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out[0..n], "…") != null);
 }
 
 /// Render a single-column list in one of two shapes:

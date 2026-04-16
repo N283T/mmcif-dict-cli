@@ -238,7 +238,31 @@ pub fn containsInsensitive(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-pub fn extractSnippet(haystack: []const u8, needle: []const u8, context_chars: usize) []const u8 {
+pub fn extractSnippet(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8, context_chars: usize) ![]u8 {
+    const raw = rawSnippet(haystack, needle, context_chars);
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+    var prev_space = false;
+    for (raw) |c| {
+        const is_ws = c == ' ' or c == '\t' or c == '\n' or c == '\r';
+        if (is_ws) {
+            if (!prev_space and list.items.len > 0) {
+                try list.append(allocator, ' ');
+                prev_space = true;
+            }
+        } else {
+            try list.append(allocator, c);
+            prev_space = false;
+        }
+    }
+    // Trim any trailing space produced by the collapse.
+    if (list.items.len > 0 and list.items[list.items.len - 1] == ' ') {
+        _ = list.pop();
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+fn rawSnippet(haystack: []const u8, needle: []const u8, context_chars: usize) []const u8 {
     if (needle.len == 0 or haystack.len < needle.len) return haystack[0..@min(haystack.len, context_chars * 2)];
 
     const end = haystack.len - needle.len + 1;
@@ -275,10 +299,23 @@ test "containsInsensitive edge cases" {
 }
 
 test "extractSnippet" {
+    const allocator = std.testing.allocator;
     const text = "Data items in the ATOM_SITE category record details about the atom sites";
-    const snippet = extractSnippet(text, "atom_site", 10);
+    const snippet = try extractSnippet(allocator, text, "atom_site", 10);
+    defer allocator.free(snippet);
     try std.testing.expect(snippet.len > 0);
     try std.testing.expect(containsInsensitive(snippet, "atom_site"));
+}
+
+test "extractSnippet normalizes whitespace" {
+    const allocator = std.testing.allocator;
+    const text = "a\nb\tc  d\n\n  matched\n  tail";
+    const snippet = try extractSnippet(allocator, text, "matched", 20);
+    defer allocator.free(snippet);
+    // No newlines, tabs, or double spaces in output.
+    try std.testing.expect(std.mem.indexOfScalar(u8, snippet, '\n') == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, snippet, '\t') == null);
+    try std.testing.expect(std.mem.indexOf(u8, snippet, "  ") == null);
 }
 
 test "Dictionary.loadFromFile on tiny fixture" {

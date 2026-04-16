@@ -169,20 +169,20 @@ pub fn printSearchResults(gpa: std.mem.Allocator, w: *std.io.Writer, query: []co
             var idx: usize = 0;
 
             for (results.categories) |cat| {
-                const snippet = dict.extractSnippet(cat.description, query, 40);
+                const snippet = try dict.extractSnippet(a, cat.description, query, 40);
                 row_storage[idx] = .{ "category", cat.id, snippet };
                 rows[idx] = &row_storage[idx];
                 idx += 1;
             }
             for (results.items) |item| {
-                const snippet = dict.extractSnippet(item.description, query, 40);
+                const snippet = try dict.extractSnippet(a, item.description, query, 40);
                 row_storage[idx] = .{ "item", item.name, snippet };
                 rows[idx] = &row_storage[idx];
                 idx += 1;
             }
 
             const cols = [_]table.Column{
-                .{ .header = "Kind" },
+                .{ .header = "Kind", .max_width = 10 },
                 .{ .header = "Name" },
                 .{ .header = "Match" },
             };
