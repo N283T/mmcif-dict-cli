@@ -4,25 +4,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Stage 1: compile_tool binary (host target, Debug) — converts .dic to .mdict.
-    const compile_tool = b.addExecutable(.{
-        .name = "mmcif-dict-compile-tool",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/compile_tool.zig"),
-            .target = b.graph.host,
-            .optimize = .Debug,
-        }),
-    });
-
-    // Stage 2: run compile_tool against data/mmcif_pdbx.dic to produce the
-    // default cache embedded into the main binary.
-    const run_compile = b.addRunArtifact(compile_tool);
-    run_compile.addFileArg(b.path("data/mmcif_pdbx.dic"));
-    run_compile.addArg("-o");
-    const embedded_mdict = run_compile.addOutputFileArg("mmcif_pdbx.mdict");
-
-    // Stage 3: main executable. Imports the generated .mdict via @embedFile
-    // so distributed binaries are self-contained.
     const exe = b.addExecutable(.{
         .name = "mmcif-dict",
         .root_module = b.createModule(.{
@@ -30,9 +11,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
-    });
-    exe.root_module.addAnonymousImport("embedded_pdbx", .{
-        .root_source_file = embedded_mdict,
     });
     b.installArtifact(exe);
 
