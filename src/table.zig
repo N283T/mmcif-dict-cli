@@ -1,3 +1,18 @@
+//! Simple table renderer for the mmCIF CLI.
+//!
+//! Width accounting uses byte lengths (`cell.len`) throughout. This is
+//! correct only for ASCII content — all mmCIF identifiers and category
+//! names are ASCII, which is the module's intended input. Non-ASCII cells
+//! will produce misaligned columns and may be truncated at arbitrary
+//! UTF-8 byte boundaries in boxed mode. The only multi-byte character
+//! emitted by this module is the "…" ellipsis appended by truncation.
+//!
+//! The proportional shrink in `renderBoxed` clamps each column to a
+//! minimum of 1 character. When a very narrow budget combines with many
+//! columns, the final table can exceed `terminal_width`. This is
+//! acceptable for mmCIF output (2–3 columns of moderate width) but
+//! would need a second-pass correction for wider use.
+
 const std = @import("std");
 
 pub const Align = enum { left, right };
@@ -11,7 +26,8 @@ pub const Style = enum { boxed, tsv };
 
 pub const Options = struct {
     style: Style,
-    /// Only used by .boxed. Must be > 0.
+    /// Only used by .boxed. A value of 0 disables width-based shrinking
+    /// (columns render at their natural width).
     terminal_width: usize = 80,
 };
 
@@ -33,6 +49,7 @@ fn renderTsv(
     cols: []const Column,
     rows: []const []const []const u8,
 ) !void {
+    // TSV is unpadded: column alignment is ignored by design.
     for (cols, 0..) |c, i| {
         if (i > 0) try w.writeByte('\t');
         try w.writeAll(c.header);
