@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `--version` / `-V` flag prints the CLI version (e.g. `mmcif-dict 0.3.0`) and
   exits; the version is sourced from `build.zig.zon` via a build option so it
   stays in sync with the release automatically (#36)
+- Table rendering for `relations`, `search`, and the `category NAME` items
+  list; Unicode-boxed on a tty, tab-separated when piped
+- `--no-table` flag forces plain tab-separated output regardless of tty
+
+### Changed
+
+- `Description` output strips the common leading whitespace carried over from
+  source `.dic` files; paragraphs now read as intended
+- **Breaking (shell parsing)**: piped output of `relations` and `search` is
+  now tab-separated columns instead of prose. Machine consumers should use
+  `--json`.
 
 ## [0.3.0] - 2026-04-16
 
