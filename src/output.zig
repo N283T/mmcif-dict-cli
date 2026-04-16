@@ -1,19 +1,10 @@
 const std = @import("std");
 const dict = @import("dict.zig");
-const table = @import("table.zig");
 
 pub const Format = enum { text, json };
 
-pub const Options = struct {
-    format: Format = .text,
-    /// Text-mode style. Ignored when format == .json.
-    text_style: table.Style = .tsv,
-    /// Terminal width for boxed layouts. Ignored when text_style == .tsv.
-    terminal_width: usize = 80,
-};
-
-pub fn printCategory(w: *std.io.Writer, cat: dict.Category, opts: Options) !void {
-    switch (opts.format) {
+pub fn printCategory(w: *std.io.Writer, cat: dict.Category, format: Format) !void {
+    switch (format) {
         .text => {
             try w.print("Category: {s}\n", .{cat.id});
             try w.print("Mandatory: {s}\n", .{cat.mandatory_code});
@@ -33,14 +24,12 @@ pub fn printCategory(w: *std.io.Writer, cat: dict.Category, opts: Options) !void
                 }
                 try w.print("\n", .{});
             }
-            try w.print("\nDescription:\n", .{});
-            try writeDescription(w, cat.description);
+            try w.print("\nDescription:\n{s}\n", .{cat.description});
             if (cat.items.len > 0) {
                 try w.print("\nItems ({d}):\n", .{cat.items.len});
-                try table.renderGrid(w, cat.items, .{
-                    .style = opts.text_style,
-                    .terminal_width = opts.terminal_width,
-                });
+                for (cat.items) |item| {
+                    try w.print("  {s}\n", .{item});
+                }
             }
         },
         .json => {
@@ -61,15 +50,14 @@ pub fn printCategory(w: *std.io.Writer, cat: dict.Category, opts: Options) !void
     }
 }
 
-pub fn printItem(w: *std.io.Writer, item: dict.Item, opts: Options) !void {
-    switch (opts.format) {
+pub fn printItem(w: *std.io.Writer, item: dict.Item, format: Format) !void {
+    switch (format) {
         .text => {
             try w.print("Item: {s}\n", .{item.name});
             try w.print("Category: {s}\n", .{item.category_id});
             try w.print("Type: {s}\n", .{item.type_code});
             try w.print("Mandatory: {s}\n", .{item.mandatory_code});
-            try w.print("\nDescription:\n", .{});
-            try writeDescription(w, item.description);
+            try w.print("\nDescription:\n{s}\n", .{item.description});
             if (item.enum_values.len > 0) {
                 try w.print("\nAllowed values:\n", .{});
                 for (item.enum_values) |v| {
@@ -95,40 +83,25 @@ pub fn printItem(w: *std.io.Writer, item: dict.Item, opts: Options) !void {
     }
 }
 
-pub fn printRelations(gpa: std.mem.Allocator, w: *std.io.Writer, category_id: []const u8, rels: []const dict.Relation, opts: Options) !void {
-    switch (opts.format) {
+pub fn printRelations(w: *std.io.Writer, category_id: []const u8, rels: []const dict.Relation, format: Format) !void {
+    switch (format) {
         .text => {
             try w.print("Relations for: {s}\n\n", .{category_id});
             if (rels.len == 0) {
                 try w.print("  No relations found.\n", .{});
                 return;
             }
-
-            var arena = std.heap.ArenaAllocator.init(gpa);
-            defer arena.deinit();
-            const a = arena.allocator();
-
-            const row_storage = try a.alloc([3][]const u8, rels.len);
-            const rows = try a.alloc([]const []const u8, rels.len);
-            for (rels, 0..) |rel, i| {
-                // Always show "this category's item" first, then the counterpart.
+            for (rels) |rel| {
                 if (std.mem.eql(u8, rel.child_category_id, category_id)) {
-                    row_storage[i] = .{ rel.child_name, rel.parent_name, rel.parent_category_id };
+                    try w.print("  {s} -> {s} (parent: {s})\n", .{
+                        rel.child_name, rel.parent_name, rel.parent_category_id,
+                    });
                 } else {
-                    row_storage[i] = .{ rel.parent_name, rel.child_name, rel.child_category_id };
+                    try w.print("  {s} <- {s} (child: {s})\n", .{
+                        rel.parent_name, rel.child_name, rel.child_category_id,
+                    });
                 }
-                rows[i] = &row_storage[i];
             }
-
-            const cols = [_]table.Column{
-                .{ .header = "Item" },
-                .{ .header = "Related item" },
-                .{ .header = "Related category" },
-            };
-            try table.render(a, w, &cols, rows, .{
-                .style = opts.text_style,
-                .terminal_width = opts.terminal_width,
-            });
         },
         .json => {
             try w.print("{{\"category\":", .{});
@@ -151,45 +124,26 @@ pub fn printRelations(gpa: std.mem.Allocator, w: *std.io.Writer, category_id: []
     }
 }
 
-pub fn printSearchResults(gpa: std.mem.Allocator, w: *std.io.Writer, query: []const u8, results: dict.SearchResults, opts: Options) !void {
-    switch (opts.format) {
+pub fn printSearchResults(w: *std.io.Writer, query: []const u8, results: dict.SearchResults, format: Format) !void {
+    switch (format) {
         .text => {
+            if (results.categories.len > 0) {
+                try w.print("Categories ({d}):\n", .{results.categories.len});
+                for (results.categories) |cat| {
+                    const snippet = dict.extractSnippet(cat.description, query, 40);
+                    try w.print("  {s}\n    ...{s}...\n", .{ cat.id, snippet });
+                }
+            }
+            if (results.items.len > 0) {
+                try w.print("\nItems ({d}):\n", .{results.items.len});
+                for (results.items) |item| {
+                    const snippet = dict.extractSnippet(item.description, query, 40);
+                    try w.print("  {s}\n    ...{s}...\n", .{ item.name, snippet });
+                }
+            }
             if (results.categories.len == 0 and results.items.len == 0) {
                 try w.print("No results found.\n", .{});
-                return;
             }
-
-            var arena = std.heap.ArenaAllocator.init(gpa);
-            defer arena.deinit();
-            const a = arena.allocator();
-
-            const total = results.categories.len + results.items.len;
-            const row_storage = try a.alloc([3][]const u8, total);
-            const rows = try a.alloc([]const []const u8, total);
-            var idx: usize = 0;
-
-            for (results.categories) |cat| {
-                const snippet = dict.extractSnippet(cat.description, query, 40);
-                row_storage[idx] = .{ "category", cat.id, snippet };
-                rows[idx] = &row_storage[idx];
-                idx += 1;
-            }
-            for (results.items) |item| {
-                const snippet = dict.extractSnippet(item.description, query, 40);
-                row_storage[idx] = .{ "item", item.name, snippet };
-                rows[idx] = &row_storage[idx];
-                idx += 1;
-            }
-
-            const cols = [_]table.Column{
-                .{ .header = "Kind" },
-                .{ .header = "Name" },
-                .{ .header = "Match" },
-            };
-            try table.render(a, w, &cols, rows, .{
-                .style = opts.text_style,
-                .terminal_width = opts.terminal_width,
-            });
         },
         .json => {
             try w.print("{{\"query\":", .{});
@@ -209,8 +163,8 @@ pub fn printSearchResults(gpa: std.mem.Allocator, w: *std.io.Writer, query: []co
     }
 }
 
-pub fn printCategoryList(w: *std.io.Writer, names: []const []const u8, opts: Options) !void {
-    switch (opts.format) {
+pub fn printCategoryList(w: *std.io.Writer, names: []const []const u8, format: Format) !void {
+    switch (format) {
         .text => {
             for (names) |name| {
                 try w.print("{s}\n", .{name});
@@ -248,111 +202,6 @@ fn writeJsonStringArray(w: *std.io.Writer, arr: []const []const u8) !void {
         try writeJsonString(w, s);
     }
     try w.writeByte(']');
-}
-
-/// Strip the common leading whitespace from all non-blank lines of `text`.
-/// mmCIF .dic files preserve the indentation used in the source file inside
-/// multi-line description strings; this helper restores flush-left paragraphs.
-fn writeDescription(w: *std.io.Writer, text: []const u8) !void {
-    // Pass 1: find the minimum leading whitespace run across non-blank lines.
-    var min_indent: usize = std.math.maxInt(usize);
-    var start: usize = 0;
-    while (start < text.len) {
-        const nl = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
-        const line = text[start..nl];
-        const stripped = std.mem.trimLeft(u8, line, " \t");
-        if (stripped.len > 0) {
-            const indent = line.len - stripped.len;
-            if (indent < min_indent) min_indent = indent;
-        }
-        start = nl + 1;
-        if (nl == text.len) break;
-    }
-    if (min_indent == std.math.maxInt(usize)) min_indent = 0;
-
-    // Pass 2: strip that prefix from each line and write.
-    start = 0;
-    while (start < text.len) {
-        const nl = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
-        const line = text[start..nl];
-        if (line.len >= min_indent) {
-            try w.writeAll(line[min_indent..]);
-        } else {
-            try w.writeAll(line);
-        }
-        try w.writeByte('\n');
-        start = nl + 1;
-        if (nl == text.len) break;
-    }
-}
-
-test "writeDescription strips common leading whitespace" {
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("desc.txt", .{ .read = true });
-    defer file.close();
-
-    var buf: [1024]u8 = undefined;
-    var fw = file.writer(&buf);
-    const w = &fw.interface;
-
-    const input =
-        "              Data items in the ATOM_SITE category record details about\n" ++
-        "               the atom sites in a macromolecular crystal structure.\n" ++
-        "\n" ++
-        "              Second paragraph here.\n";
-    try writeDescription(w, input);
-    try w.flush();
-
-    try file.seekTo(0);
-    var out: [1024]u8 = undefined;
-    const n = try file.readAll(&out);
-    const expected =
-        "Data items in the ATOM_SITE category record details about\n" ++
-        " the atom sites in a macromolecular crystal structure.\n" ++
-        "\n" ++
-        "Second paragraph here.\n";
-    try std.testing.expectEqualStrings(expected, out[0..n]);
-}
-
-test "writeDescription preserves text with no common prefix" {
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("desc2.txt", .{ .read = true });
-    defer file.close();
-
-    var buf: [1024]u8 = undefined;
-    var fw = file.writer(&buf);
-    const w = &fw.interface;
-
-    const input = "No indent.\nSecond line.\n";
-    try writeDescription(w, input);
-    try w.flush();
-
-    try file.seekTo(0);
-    var out: [256]u8 = undefined;
-    const n = try file.readAll(&out);
-    try std.testing.expectEqualStrings(input, out[0..n]);
-}
-
-test "writeDescription handles tabs as whitespace" {
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("desc3.txt", .{ .read = true });
-    defer file.close();
-
-    var buf: [1024]u8 = undefined;
-    var fw = file.writer(&buf);
-    const w = &fw.interface;
-
-    const input = "\t\tline one\n\t\tline two\n";
-    try writeDescription(w, input);
-    try w.flush();
-
-    try file.seekTo(0);
-    var out: [256]u8 = undefined;
-    const n = try file.readAll(&out);
-    try std.testing.expectEqualStrings("line one\nline two\n", out[0..n]);
 }
 
 test "writeJsonString escapes special characters" {

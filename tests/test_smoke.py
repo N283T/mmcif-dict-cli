@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -231,110 +230,6 @@ def test_help_mentions_version_flag() -> None:
     assert "--version" in r.stdout
     # Guard against someone quietly dropping the short form from usage text.
     assert "-V" in r.stdout
-
-
-# ── Rich CLI output (tables, --no-table) ────────────────────────────
-
-
-def test_relations_tsv_is_tab_separated() -> None:
-    # Without a pty, stdout is a pipe -> tsv auto-selected.
-    r = _run_with_dict("relations", "test_category")
-    assert r.returncode == 0, r.stderr
-    assert "│" not in r.stdout
-    assert "─" not in r.stdout
-    # Fixture has no relations, so we expect the "No relations found" path.
-    # If the fixture ever gets relations, this assertion needs updating.
-    assert "No relations found" in r.stdout or "\t" in r.stdout
-
-
-def test_relations_no_table_flag_matches_pipe_default() -> None:
-    r1 = _run_with_dict("relations", "test_category")
-    r2 = _run_with_dict("--no-table", "relations", "test_category")
-    assert r1.returncode == 0 and r2.returncode == 0
-    assert r1.stdout == r2.stdout
-
-
-def test_search_tsv_shape() -> None:
-    r = _run_with_dict("search", "test")
-    assert r.returncode == 0, r.stderr
-    data_lines = [
-        ln
-        for ln in r.stdout.splitlines()
-        if ln.strip() and not ln.startswith("No results")
-    ]
-    assert data_lines, "search returned no results — fixture may have changed"
-    # Every data line (including header) has at least 2 tabs.
-    for ln in data_lines:
-        assert ln.count("\t") >= 2, f"expected 3 columns, got {ln!r}"
-
-
-def test_category_items_tsv_one_per_line() -> None:
-    r = _run_with_dict("category", "test_category")
-    assert r.returncode == 0, r.stderr
-    parts = r.stdout.split("Items (", 1)
-    assert len(parts) == 2, "Items section not found in output"
-    items_section = parts[1]
-    # mmCIF item names start with `_category.name`; legacy formatter
-    # indents each name with 2 spaces in tsv mode.
-    for ln in items_section.splitlines()[1:]:
-        if not ln.strip():
-            continue
-        assert ln.startswith("  _"), f"unexpected item line: {ln!r}"
-
-
-def test_no_table_flag_in_help() -> None:
-    r = _run("--help")
-    assert r.returncode == 0, r.stderr
-    assert "--no-table" in r.stdout
-
-
-def test_json_output_unchanged_by_table_flag() -> None:
-    r1 = _run_with_dict("--json", "category", "test_category")
-    r2 = _run_with_dict("--json", "--no-table", "category", "test_category")
-    assert r1.returncode == 0 and r2.returncode == 0
-    assert r1.stdout == r2.stdout
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="pty.fork is POSIX-only")
-def test_relations_boxed_on_fake_tty() -> None:
-    # Force a tty via pty to exercise the boxed branch.
-    import pty
-
-    assert _compiled_mdict is not None, "fixture not initialised"
-    pid, fd = pty.fork()
-    if pid == 0:
-        try:
-            os.execvpe(
-                str(BINARY),
-                [
-                    str(BINARY),
-                    "--dict",
-                    str(_compiled_mdict),
-                    "relations",
-                    "test_category",
-                ],
-                _isolated_env(),
-            )
-        except Exception:
-            os._exit(1)
-        os._exit(1)  # execvpe only returns on failure
-    # Parent: read until EOF.
-    chunks: list[bytes] = []
-    try:
-        while True:
-            try:
-                data = os.read(fd, 4096)
-            except OSError:
-                break
-            if not data:
-                break
-            chunks.append(data)
-    finally:
-        os.close(fd)
-        os.waitpid(pid, 0)
-    out = b"".join(chunks).decode("utf-8", errors="replace")
-    # Boxed mode emits Unicode borders.
-    assert "│" in out or "No relations" in out, out[:200]
 
 
 if __name__ == "__main__":
